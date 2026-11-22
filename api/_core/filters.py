@@ -63,6 +63,15 @@ def is_us_location(location: str) -> bool:
     return bool(ANYWHERE_RE.search(loc))  # "Remote" with no region = open to US applicants
 
 
+# Level markers that mean "experienced" regardless of wording: Google/Meta-style L5+/E5+/IC5+,
+# "Software Engineer 3", "SDE-4", "Level 4".
+LEVEL_RE = re.compile(
+    r"\b(?:L|E|IC|P)\s?-?[5-9]\b"
+    r"|(?i:\b(?:engineer|developer|swe|sde|programmer)\s*-?\s*(?:[3-9])\b)"
+    r"|(?i:\blevel\s*[3-9]\b)"
+)
+
+
 def _keyword_re(words):
     words = [w.strip() for w in words or [] if w and w.strip()]
     if not words:
@@ -77,6 +86,7 @@ class Filters:
         self.exclude = _keyword_re(settings.get("exclude_keywords"))
         self.location = _keyword_re(settings.get("location_keywords"))
         self.companies = _keyword_re(settings.get("exclude_companies"))
+        self.seniority = _keyword_re(settings.get("seniority_exclude"))
         self.us_only = bool(settings.get("us_only"))
         days = settings.get("max_age_days") or 0
         now = datetime.now(timezone.utc)
@@ -96,6 +106,10 @@ class Filters:
         """Why this job is filtered out, or None if it passes the title/location/age filters."""
         if self.include and not self.include.search(job.title):
             return "Title doesn't match your roles"
+        if self.seniority and not job.loose:  # multi-role HN posts are judged by their description instead
+            word = self._senior_word(job.title)
+            if word:
+                return f"Experienced-level title (“{word}”)"
         if self.exclude and not job.loose:
             m = self.exclude.search(job.title)
             if m:
@@ -109,6 +123,15 @@ class Filters:
         if baseline and not (job.posted_at and job.posted_at >= self.baseline_oldest):
             return "Already open when this source was added"
         return None
+
+    def _senior_word(self, title: str) -> str | None:
+        for m in self.seniority.finditer(title):
+            # "Member of Technical Staff" is used for every level at AI labs, so it isn't "staff level".
+            if m.group(0).lower().startswith("staff") and title[:m.start()].lower().endswith("technical "):
+                continue
+            return m.group(0)
+        m = LEVEL_RE.search(title)
+        return m.group(0) if m else None
 
     def match(self, job: Job, baseline: bool = False) -> bool:
         return self.reason(job, baseline) is None

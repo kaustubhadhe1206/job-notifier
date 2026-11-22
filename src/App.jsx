@@ -273,7 +273,7 @@ function JobsTab({ refreshKey }) {
         <div className="segmented">
           {[
             ["matched", "Matches"],
-            ["review", "Skipped for visa / clearance"],
+            ["review", "Skipped (not eligible)"],
             ["new", "All new postings"],
             ["all", "Everything tracked"],
           ].map(([id, label]) => (
@@ -667,6 +667,7 @@ function SettingsTab({ settings, setup, reload, notify }) {
     exclude_companies: toText(settings.exclude_companies),
     location_keywords: toText(settings.location_keywords),
     sponsor_companies: toText(settings.sponsor_companies),
+    seniority_exclude: toText(settings.seniority_exclude),
   }));
   const [saving, setSaving] = useState(false);
   const [sending, setSending] = useState(false);
@@ -685,6 +686,8 @@ function SettingsTab({ settings, setup, reload, notify }) {
           exclude_companies: toList(form.exclude_companies),
           location_keywords: toList(form.location_keywords),
           sponsor_companies: toList(form.sponsor_companies),
+          seniority_exclude: toList(form.seniority_exclude),
+          max_years_experience: Number(form.max_years_experience) || 0,
           max_age_days: Number(form.max_age_days) || 0,
           auto_interval_minutes: Number(form.auto_interval_minutes) || 15,
         },
@@ -754,6 +757,16 @@ function SettingsTab({ settings, setup, reload, notify }) {
             <input type="number" min="0" max="365" value={form.max_age_days} onChange={set("max_age_days")} />
           </label>
         </div>
+
+        <h3>Experience level</h3>
+        <label className="field">
+          <span>Skip job titles containing (levels like III, IV, L5+, E5+ and “Engineer 3” are skipped too; “Member of Technical Staff” is allowed)</span>
+          <textarea rows={2} value={form.seniority_exclude} onChange={set("seniority_exclude")} />
+        </label>
+        <label className="field narrow-field">
+          <span>Skip jobs whose description asks for more than … years of experience (0 = don't check)</span>
+          <input type="number" min="0" max="30" value={form.max_years_experience} onChange={set("max_years_experience")} />
+        </label>
 
         <h3>Work authorization</h3>
         <p className="muted small">

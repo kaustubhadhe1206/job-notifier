@@ -20,6 +20,7 @@ from fastapi.responses import JSONResponse  # noqa: E402
 from pydantic import BaseModel, Field  # noqa: E402
 
 from _core import checker, db, detect, eligibility, fetchers, notifier, sheets  # noqa: E402
+from _core.presets import DEFAULT_SETTINGS  # noqa: E402
 
 app = FastAPI(title="Hidden Jobs", docs_url=None, redoc_url=None, openapi_url=None)
 
@@ -83,6 +84,8 @@ class SettingsIn(BaseModel):
     exclude_keywords: list[str] = []
     exclude_companies: list[str] = []
     location_keywords: list[str] = []
+    seniority_exclude: list[str] = Field(default_factory=lambda: list(DEFAULT_SETTINGS["seniority_exclude"]))
+    max_years_experience: int = Field(default=2, ge=0, le=30)
     us_only: bool = True
     max_age_days: int = Field(default=7, ge=0, le=365)
     skip_ineligible: bool = True
@@ -94,7 +97,7 @@ class SettingsIn(BaseModel):
 
 
 WORD_LIST_SETTINGS = ("include_keywords", "exclude_keywords", "exclude_companies", "location_keywords",
-                      "sponsor_companies")
+                      "sponsor_companies", "seniority_exclude")
 
 
 def _clean_words(words: list[str]) -> list[str]:

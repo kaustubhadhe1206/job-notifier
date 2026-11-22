@@ -360,6 +360,8 @@ def fetch_linkedin(c, cfg, ctx):
             params["geoId"] = cfg["geo_id"]
         if cfg.get("remote"):
             params["f_WT"] = "2"
+        if cfg.get("experience"):
+            params["f_E"] = cfg["experience"]  # LinkedIn experience levels, e.g. "2,3" = entry level + associate
         r = c.get("https://www.linkedin.com/jobs-guest/jobs/api/seeMoreJobPostings/search", params=params,
                   headers={"Accept": "text/html", "Accept-Language": "en-US,en;q=0.9"})
         if r.status_code == 429:

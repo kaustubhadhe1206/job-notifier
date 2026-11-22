@@ -13,7 +13,7 @@ from psycopg.rows import dict_row
 from psycopg.types.json import Jsonb
 
 from . import fetchers
-from .presets import DEFAULT_SETTINGS, PRESET_SOURCES
+from .presets import DEFAULT_SETTINGS, LINKEDIN_ENTRY_LEVELS, PRESET_SOURCES, PRESET_VERSION
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS sources (
@@ -111,18 +111,48 @@ def _ensure_schema(conn: psycopg.Connection) -> None:
             seeded = conn.execute(
                 "INSERT INTO settings (key, value) VALUES ('_seeded', 'true') ON CONFLICT DO NOTHING RETURNING key"
             ).fetchone()
-            if seeded:
-                for p in PRESET_SOURCES:
-                    conn.execute(
-                        "INSERT INTO sources (name, kind, config, url, origin, interval_minutes) "
-                        "VALUES (%s, %s, %s, %s, 'preset', %s)",
-                        (p["name"], p["kind"], Jsonb(p["config"]), fetchers.public_url(p["kind"], p["config"]),
-                         p["interval_minutes"]),
-                    )
+            _migrate_presets(conn, fresh=bool(seeded))
             conn.commit()
         except psycopg.errors.UniqueViolation:  # two cold starts raced on CREATE TABLE
             conn.rollback()
         _schema_ready = True
+
+
+def _add_preset(conn, p: dict) -> None:
+    conn.execute(
+        "INSERT INTO sources (name, kind, config, url, origin, interval_minutes) VALUES (%s, %s, %s, %s, 'preset', %s)",
+        (p["name"], p["kind"], Jsonb(p["config"]), fetchers.public_url(p["kind"], p["config"]), p["interval_minutes"]),
+    )
+
+
+def _migrate_presets(conn, fresh: bool) -> None:
+    """Fresh database: add all default feeds. Existing database: apply preset changes made since
+    it was created, once (tracked by the _presets_version setting)."""
+    if fresh:
+        for p in PRESET_SOURCES:
+            _add_preset(conn, p)
+        version = PRESET_VERSION
+    else:
+        row = conn.execute("SELECT value FROM settings WHERE key = '_presets_version'").fetchone()
+        version = int(row["value"]) if row else 1
+        if version >= PRESET_VERSION:
+            return
+        if version < 2:
+            # v2: entry-level filter on the default LinkedIn searches
+            conn.execute(
+                "UPDATE sources SET config = config || %s "
+                "WHERE origin = 'preset' AND kind = 'linkedin' AND NOT (config ? 'experience')",
+                (Jsonb({"experience": LINKEDIN_ENTRY_LEVELS}),),
+            )
+        for p in PRESET_SOURCES:
+            if p.get("since_version", 1) > version:
+                _add_preset(conn, p)
+        version = PRESET_VERSION
+    conn.execute(
+        "INSERT INTO settings (key, value) VALUES ('_presets_version', %s) "
+        "ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value",
+        (Jsonb(version),),
+    )
 
 
 @contextmanager

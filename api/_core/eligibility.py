@@ -151,6 +151,51 @@ POSITIVE = [re.compile(p, re.I) for p in [
 HN_VISA_TAG = re.compile(r"(?:^|\|)\s*(?:visa|visas|visa sponsorship|visa ok|h-?1-?b ok|will sponsor)\s*(?:\||$)", re.I)
 
 
+# ---------------------------------------------------------------- years of experience
+
+_NUMBER_WORDS = {"zero": 0, "one": 1, "two": 2, "three": 3, "four": 4, "five": 5, "six": 6, "seven": 7,
+                 "eight": 8, "nine": 9, "ten": 10, "twelve": 12, "fifteen": 15}
+_NUM = r"(\d{1,2}|zero|one|two|three|four|five|six|seven|eight|nine|ten|twelve|fifteen)"
+_RANGE = rf"{_NUM}\s*(?:\+|plus|or more|or greater)?\s*(?:(?:-|–|—|to|or)\s*{_NUM}\s*\+?\s*)?"
+YOE_PATTERNS = [
+    # "3+ years of professional software experience", "2-4 yrs experience", "five years' experience"
+    re.compile(rf"\b{_RANGE}(?:years?|yrs?)'?\.?(?:\s+(?:of|in|with|as|at|on|building|working|doing|writing))?"
+               rf"(?:\s+[\w/&,+.-]+){{0,6}}?\s+(?:experience|exp)\b", re.I),
+    # "minimum of 3 years ... experience" is covered above; "experience: 3+ years", "experience of 5 years"
+    re.compile(rf"\bexperience\b(?:\s*(?::|of|-|–|—|\())?\s*(?:at least |minimum of |a minimum of )?{_RANGE}(?:years?|yrs?)\b", re.I),
+]
+YOE_IGNORE = re.compile(r"prefer|nice[\s-]to[\s-]have|bonus|ideally|a plus|is a plus|desired|desirable|optional|"
+                        r"not required|we have|we've|our team has|our founders|company has|over the (?:past|last)", re.I)
+
+
+def _num(s: str | None) -> int | None:
+    if s is None:
+        return None
+    s = s.lower()
+    return int(s) if s.isdigit() else _NUMBER_WORDS.get(s)
+
+
+def required_years(text: str, loose: bool = False) -> tuple[int, re.Match] | None:
+    """Years of experience a posting requires, or None if it doesn't say.
+
+    For a normal posting this is the largest stated minimum ("5+ years", with "2+ years of Go"
+    alongside, means 5). For a multi-role post (HN "Who is hiring") it's the smallest, since
+    one of the roles may fit. Mentions marked preferred / nice-to-have are ignored."""
+    found: list[tuple[int, re.Match]] = []
+    for rx in YOE_PATTERNS:
+        for m in rx.finditer(text):
+            low = _num(m.group(1))
+            if low is None or low > 12:  # "20 years of experience" is usually about the company
+                continue
+            context = text[max(0, m.start() - 80):m.end() + 40]
+            if YOE_IGNORE.search(context):
+                continue
+            found.append((low, m))
+    if not found:
+        return None
+    return (min if loose else max)(found, key=lambda x: x[0])
+
+
 def _quote(text: str, m: re.Match) -> str:
     a, b = max(0, m.start() - 50), min(len(text), m.end() + 50)
     return ("…" if a else "") + text[a:b].strip() + ("…" if b < len(text) else "")
@@ -182,10 +227,16 @@ class Verdict:
     note: str    # short human explanation shown in the email and dashboard
 
 
-def evaluate(title: str, company: str, description: str, settings: dict) -> Verdict:
+def evaluate(title: str, company: str, description: str, settings: dict, loose: bool = False) -> Verdict:
     mode = settings.get("visa_mode") or "allow_unknown"  # allow_unknown | require | off
     text = f"{title}. {description or ''}"
     read_note = "" if description else " (couldn't read the full description)"
+
+    max_years = int(settings.get("max_years_experience") or 0)
+    if max_years > 0 and description:
+        req = required_years(text, loose=loose)
+        if req and req[0] > max_years:
+            return Verdict(False, "blocked", f"Asks for {req[0]}+ years of experience: “{_quote(text, req[1])}”")
 
     if settings.get("skip_ineligible", True):
         m = _find(CLEARANCE, text)

@@ -21,6 +21,12 @@ DEFAULT_SETTINGS = {
         "General Atomics", "Sierra Nevada", "Textron", "SpaceX", "Blue Origin", "Anduril",
     ],
     "location_keywords": [],      # extra places to allow besides the US
+    # Experience level: entry level / up to ~2 years
+    "seniority_exclude": [        # skip titles containing these (plus levels like III, IV, L5+, E5+, "Engineer 3")
+        "senior", "sr", "snr", "staff", "principal", "lead", "architect", "distinguished", "fellow", "chief",
+        "manager", "director", "head of", "VP", "expert", "intern", "internship", "co-op", "III", "IV",
+    ],
+    "max_years_experience": 2,    # skip jobs whose description requires more years than this (0 = don't check)
     "us_only": True,
     "max_age_days": 7,            # ignore postings older than this (when the date is known)
     # Work authorization (F-1 student who will need H-1B sponsorship)
@@ -35,6 +41,12 @@ DEFAULT_SETTINGS = {
     "paused": False,
 }
 
+# LinkedIn experience-level filter (f_E): 1 internship, 2 entry level, 3 associate, 4 mid-senior, ...
+LINKEDIN_ENTRY_LEVELS = "2,3"
+
+# Bump when presets change; existing databases are migrated once (see db._migrate_presets).
+PRESET_VERSION = 2
+
 # Discovery feeds created automatically on first start.
 PRESET_SOURCES = [
     {"name": "Hacker News: Who is hiring", "kind": "hn_hiring", "config": {}, "interval_minutes": 10},
@@ -43,7 +55,12 @@ PRESET_SOURCES = [
     {"name": "Himalayas", "kind": "himalayas", "config": {}, "interval_minutes": 15},
     {"name": "We Work Remotely (programming)", "kind": "weworkremotely", "config": {}, "interval_minutes": 15},
     {"name": "LinkedIn: Software Engineer · United States", "kind": "linkedin",
-     "config": {"keywords": "software engineer", "location": "United States"}, "interval_minutes": 10},
+     "config": {"keywords": "software engineer", "location": "United States", "experience": LINKEDIN_ENTRY_LEVELS},
+     "interval_minutes": 10},
     {"name": "LinkedIn: AI Engineer · United States", "kind": "linkedin",
-     "config": {"keywords": "AI engineer", "location": "United States"}, "interval_minutes": 10},
+     "config": {"keywords": "AI engineer", "location": "United States", "experience": LINKEDIN_ENTRY_LEVELS},
+     "interval_minutes": 10},
+    {"name": "LinkedIn: New Grad Engineer · United States", "kind": "linkedin", "since_version": 2,
+     "config": {"keywords": "new grad engineer", "location": "United States", "experience": LINKEDIN_ENTRY_LEVELS},
+     "interval_minutes": 15},
 ]

@@ -86,7 +86,8 @@ def evaluate_jobs(items: list[tuple[dict, fetchers.Job]], settings: dict,
             verdicts.append(eligibility.Verdict(
                 False, "pending", f"Couldn't read the description yet (try {attempt} of {MAX_READ_ATTEMPTS}); retrying shortly"))
         else:
-            verdicts.append(eligibility.evaluate(job.title, job.company or source["name"], text, settings))
+            verdicts.append(eligibility.evaluate(job.title, job.company or source["name"], text, settings,
+                                                 loose=job.loose))
     return verdicts
 
 
