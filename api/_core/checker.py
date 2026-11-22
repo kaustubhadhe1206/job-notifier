@@ -9,7 +9,7 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 
-from . import db, detect, discovery, eligibility, fetchers, notifier, seeder, sheets
+from . import db, detect, discovery, eligibility, fetchers, llm_check, notifier, seeder, sheets
 from .filters import Filters
 
 MAX_SOURCES_PER_RUN = 100  # a run checks at most this many sources (mostly cheap "not modified" replies)
@@ -100,12 +100,16 @@ def _description(item, allow_fetch: bool) -> tuple[str, bool]:
 
 
 def evaluate_jobs(items: list[tuple[dict, fetchers.Job]], settings: dict,
-                  attempts: list[int] | None = None) -> list[eligibility.Verdict]:
+                  attempts: list[int] | None = None,
+                  ai_usage: llm_check.Usage | None = None) -> list[eligibility.Verdict]:
     """Read each candidate's description (in parallel) and decide if you're eligible.
 
     If a description can't be read (LinkedIn rate limits, timeouts) the job stays 'pending' and is
     retried on later runs, so a clearance requirement is never missed just because a request
-    failed. After MAX_READ_ATTEMPTS it's decided from the title and company alone."""
+    failed. After MAX_READ_ATTEMPTS it's decided from the title and company alone.
+
+    With ai_usage given (AI check enabled and within budget), jobs that pass the rules are also
+    read by Claude Haiku, which can add restrictions the rules missed."""
     attempts = attempts or [MAX_READ_ATTEMPTS] * len(items)
     with ThreadPoolExecutor(max_workers=10) as pool:
         reads = list(pool.map(lambda ix: _description(ix[1], ix[0] < MAX_DESCRIPTIONS_PER_RUN), enumerate(items)))
@@ -117,7 +121,31 @@ def evaluate_jobs(items: list[tuple[dict, fetchers.Job]], settings: dict,
         else:
             verdicts.append(eligibility.evaluate(job.title, job.company or source["name"], text, settings,
                                                  loose=job.loose))
+
+    if ai_usage is not None:
+        to_check = [i for i, v in enumerate(verdicts) if v.ok and reads[i][0]][:llm_check.MAX_CALLS_PER_RUN]
+        max_years = int(settings.get("max_years_experience") or 0)
+
+        def ask(i):
+            source, job = items[i]
+            return llm_check.check(job.title, job.company or source["name"], reads[i][0], max_years, ai_usage)
+
+        with ThreadPoolExecutor(max_workers=8) as pool:
+            answers = list(pool.map(ask, to_check))
+        for i, facts in zip(to_check, answers):
+            if facts:
+                verdicts[i] = eligibility.apply_ai(verdicts[i], facts, settings)
     return verdicts
+
+
+def ai_usage_for_run(conn, settings: dict) -> llm_check.Usage | None:
+    """A Usage tracker if the AI check should run now (enabled, key set, under the monthly limit)."""
+    if not (settings.get("ai_check") and llm_check.configured()):
+        return None
+    limit = float(settings.get("ai_monthly_limit_usd") or 0)
+    if limit > 0 and db.ai_spend(conn)["month_usd"] >= limit:
+        return None
+    return llm_check.Usage()
 
 
 def run_check(trigger: str = "cron", force: bool = False, source_ids: list[int] | None = None) -> dict:
@@ -230,9 +258,16 @@ def run_check(trigger: str = "cron", force: bool = False, source_ids: list[int] 
                                p["posted_at"])
             work.append((p["id"], src, job, p["checks"] + 1))
         if work:
-            verdicts = evaluate_jobs([(s, j) for _, s, j, _ in work], settings, [n for *_, n in work])
+            ai_usage = ai_usage_for_run(conn, settings)
+            verdicts = evaluate_jobs([(s, j) for _, s, j, _ in work], settings, [n for *_, n in work], ai_usage)
             db.set_eligibility(conn, [{"id": jid, "matched": v.ok, "visa": v.visa, "note": v.note, "checks": n}
                                       for (jid, _, _, n), v in zip(work, verdicts)])
+            if ai_usage and ai_usage.calls:
+                db.record_ai_usage(conn, ai_usage)
+                summary["ai_checks"] = ai_usage.calls
+                summary["ai_cost_usd"] = round(ai_usage.cost_usd, 5)
+                if ai_usage.errors:
+                    summary["errors"].append({"source": "AI check", "error": ai_usage.last_error})
             conn.commit()
             summary["candidates"] = len(work)
             summary["blocked"] = sum(1 for v in verdicts if v.visa == "blocked")

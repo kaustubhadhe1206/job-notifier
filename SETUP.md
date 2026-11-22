@@ -1,6 +1,6 @@
 # Setup guide
 
-Everything below is free. Plan for about 40 minutes. Do the steps in order: later steps need values from earlier ones.
+Steps 1–8 are free; step 9 (AI check) is optional and costs a few cents a month. Plan for about 40 minutes. Do the steps in order: later steps need values from earlier ones.
 
 | Service | What it does | You'll get |
 |---|---|---|
@@ -10,6 +10,7 @@ Everything below is free. Plan for about 40 minutes. Do the steps in order: late
 | Google Sheets | Your job tracker spreadsheet | `SHEETS_WEBHOOK_URL` |
 | Vercel | Hosts the dashboard and the checker | your app URL |
 | cron-job.org | Runs the checker every minute | — |
+| Anthropic (optional) | Claude Haiku double-checks each job's requirements | `ANTHROPIC_API_KEY` |
 
 Keep a text file open (not in the project folder) to collect the values as you go.
 
@@ -120,6 +121,7 @@ Alerts go to the same address unless you set **`NOTIFY_EMAIL`** (or change it la
    | `SHEETS_WEBHOOK_URL` | from Step 5 |
    | `SHEETS_SECRET` | from Step 1 (same as in Code.gs) |
    | `NOTIFY_EMAIL` | optional: where alerts go |
+   | `ANTHROPIC_API_KEY` | optional: from Step 9 (AI check); can be added later |
 
 5. **Deploy**. After a minute you get a URL like `https://hidden-jobs-xyz.vercel.app`.
 6. Optional: add **`APP_URL`** = that URL (Settings → Environment Variables) so emails link to your dashboard, then **Deployments → ⋯ → Redeploy**.
@@ -153,6 +155,43 @@ Vercel also calls the checker once a day by itself as a backup.
 
 ---
 
+## Step 9 — AI check with Claude Haiku (optional, a few cents a month)
+
+The rule-based checks catch the usual wording, but some postings phrase requirements unusually ("the government customer requires U.S. citizenship", "4+ years developing…"). With an Anthropic API key, every job that passes the rules is also read by **Claude Haiku 5.5**, which blocks it if it actually requires US citizenship / a green card, a clearance or federal background check, more years of experience than your limit, or says there's no visa sponsorship. It can also confirm "we sponsor visas".
+
+**Cost:** about $0.0002–0.001 per job checked, so roughly **$0.15–1.50 a month** for 20–200 jobs a day. This is the only part of the project that isn't free: the API is pay-as-you-go with prepaid credit. A Claude.ai Pro/Max subscription does **not** include API credit.
+
+### 9a. Create an Anthropic account and add credit
+
+1. Go to [console.anthropic.com](https://console.anthropic.com) (it may redirect to the Claude Developer Platform) and sign up. This is separate from a claude.ai chat account, but you can use the same email.
+2. **Settings → Billing → Buy credits.** Add the minimum (for example $5). Leave **auto-reload off** so you can never be charged more than you prepaid.
+3. Optional safety net: **Settings → Limits** lets you set a monthly spend limit for the whole account.
+
+### 9b. Create the API key
+
+1. **Settings → API keys → Create key.** Name it `hidden-jobs`.
+2. Copy the key right away (it starts with `sk-ant-`); it's only shown once. This is your **`ANTHROPIC_API_KEY`**.
+3. Never commit it to GitHub or paste it anywhere public. It lives only in Vercel (and in your local `.env` if you run the app locally).
+
+### 9c. Add it to Vercel
+
+1. Vercel → your project → **Settings → Environment Variables** → add `ANTHROPIC_API_KEY` with the key.
+2. **Deployments → ⋯ → Redeploy.**
+
+### 9d. Turn it on in the dashboard
+
+1. **Settings → AI check:** make sure "Double-check jobs with Claude Haiku" is ticked.
+2. Enter the **credit you loaded** (e.g. `5`) and a **monthly spending limit** (default $2; AI checks pause for the rest of the month when it's reached, and jobs are then checked by the rules only). **Save settings.**
+3. Click **Test AI check** at the top of Settings. It sends one sample posting (about $0.0003) and shows what Claude found; it should report "citizenship required: yes".
+
+### How "credit left" works
+
+Anthropic doesn't provide an API for your remaining prepaid balance, so the dashboard shows an **estimate**: the credit you entered minus what this app has spent since you entered it (calculated from the token counts of every AI check). It's exact for this app's usage, but doesn't know about anything else you use the key for. The precise balance is always on **Console → Settings → Billing**. When you add more credit, enter the new balance in Settings so the estimate restarts from it.
+
+If the credit runs out, the dashboard shows "Your credit balance is too low…" under AI check, and jobs keep being checked by the rules alone. Nothing else stops.
+
+---
+
 ## Troubleshooting
 
 | What you see | Fix |
@@ -165,6 +204,9 @@ Vercel also calls the checker once a day by itself as a backup.
 | Status pill says "Cron not set up yet" or "stalled" | Check the cron-job.org URL (domain and `key=`). Its history shows the response: 401 = wrong key. |
 | A LinkedIn source shows "HTTP 429" | LinkedIn is limiting requests. It recovers on its own; company boards are unaffected. |
 | An auto-discovered company shows errors | Boards that fail 5 times in a row are paused automatically. You can delete them. |
+| AI check: "Invalid ANTHROPIC_API_KEY" | Copy the key again from Console → API keys (it starts with `sk-ant-`), update it in Vercel, redeploy. |
+| AI check: "Your credit balance is too low" | Add credit in Console → Billing, then enter the new amount in Settings → AI check. |
+| AI check stopped running | The monthly spending limit in Settings was reached; raise it or wait for next month. |
 
 ## Later
 

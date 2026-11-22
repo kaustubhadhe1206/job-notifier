@@ -21,6 +21,7 @@ Everything runs on free tiers: **Vercel** (React dashboard + Python API), **Supa
    - **Skipped** if it needs a security clearance (TS/SCI, Secret, polygraph, public trust…), US citizenship, a green card / permanent residency, or "US persons" (ITAR / export control), or if it says there's no visa sponsorship ("must be authorized to work without sponsorship", "no OPT/H-1B", …). Defense contractors and ITAR-bound companies (Lockheed, Raytheon, Booz Allen, SpaceX, Anduril…) are on the company block list by default.
    - **Emailed** otherwise, labeled by sponsorship evidence: the posting says so ("we sponsor visas", "visa sponsorship available", HN posts tagged VISA, "OPT welcome"), the company is on your own sponsor list, the company had H-1B approvals in USCIS data (FY2021–23, about 85,000 employers), or "sponsorship not mentioned". Confirmed sponsors are listed first in each email.
    - If a description can't be read (LinkedIn often rate-limits), the job waits and is retried up to 4 times a few minutes apart, so a clearance requirement isn't missed because of a failed request.
+   - **Optional AI check:** with an `ANTHROPIC_API_KEY`, Claude Haiku 5.5 also reads every job that passes the rules and blocks unusual phrasings of citizenship, clearance, sponsorship and experience requirements (a few cents a month; spend and estimated credit left are shown in the dashboard; SETUP.md step 9).
    - Every decision is shown with its reason (and the quoted sentence) in the email and under **Jobs → Skipped for visa / clearance**.
 
    By default (**Everything without restrictions**), jobs that say nothing about sponsorship are emailed too. Not mentioning it doesn't guarantee sponsorship, which is why each job is labeled. For only confirmed sponsors, switch Settings → Visa sponsorship to **Only confirmed sponsors**.
@@ -70,6 +71,7 @@ api/_core/fetchers.py   one fetcher per job source (ATS boards + discovery feeds
 api/_core/checker.py    the polling pass: fetch → store → discover → email
 api/_core/filters.py    role / US-location / recency filters
 api/_core/eligibility.py clearance / citizenship / sponsorship checks + H-1B company lookup
+api/_core/llm_check.py  optional Claude Haiku second opinion on each job's requirements
 api/_core/data/         h1b_sponsors.json.gz (built from USCIS data by scripts/build_h1b_data.py)
 api/_core/detect.py     recognise job boards from URLs, pages, company names and feed text
 api/_core/presets.py    default filters and discovery feeds

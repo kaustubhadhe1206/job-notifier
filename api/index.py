@@ -4,6 +4,7 @@ from __future__ import annotations
 import hmac
 import os
 import sys
+from datetime import datetime, timezone
 from typing import Literal
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -19,7 +20,7 @@ from fastapi import Depends, FastAPI, HTTPException, Request  # noqa: E402
 from fastapi.responses import JSONResponse  # noqa: E402
 from pydantic import BaseModel, Field  # noqa: E402
 
-from _core import checker, db, detect, eligibility, fetchers, notifier, sheets  # noqa: E402
+from _core import checker, db, detect, eligibility, fetchers, llm_check, notifier, sheets  # noqa: E402
 from _core.presets import DEFAULT_SETTINGS  # noqa: E402
 
 app = FastAPI(title="Hidden Jobs", docs_url=None, redoc_url=None, openapi_url=None)
@@ -91,6 +92,9 @@ class SettingsIn(BaseModel):
     skip_ineligible: bool = True
     visa_mode: Literal["require", "allow_unknown", "off"] = "allow_unknown"
     sponsor_companies: list[str] = []
+    ai_check: bool = True
+    ai_monthly_limit_usd: float = Field(default=2.0, ge=0, le=1000)
+    ai_credit_usd: float = Field(default=0.0, ge=0, le=100000)
     auto_discover: bool = True
     auto_interval_minutes: int = Field(default=15, ge=5, le=1440)
     auto_idle_interval_minutes: int = Field(default=360, ge=30, le=10080)
@@ -112,6 +116,7 @@ def _setup_status(conn=None) -> dict:
         "cron_secret": bool(os.environ.get("CRON_SECRET")),
         "admin_password": bool(os.environ.get("ADMIN_PASSWORD")),
         "sheets": sheets.configured(),
+        "ai_key": llm_check.configured(),
     }
     if conn is not None:
         status["notify_to"] = notifier.recipient(db.get_settings(conn))
@@ -152,6 +157,7 @@ def overview():
             "last_run": db.last_run(conn),
             "setup": _setup_status(conn),
             "seed": db.get_meta(conn, "seed"),
+            "ai": {**db.ai_spend(conn), "model": llm_check.MODEL},
         }
 
 
@@ -253,20 +259,53 @@ def test_source(source_id: int):
         raise HTTPException(502, fetchers.describe_error(e)) from e
     with db.connect() as conn:
         settings = db.get_settings(conn)
+        ai_usage = checker.ai_usage_for_run(conn, settings)
     f = checker.Filters(settings)
-    # Show matching jobs first, with the full eligibility check (descriptions read) for those.
-    passing = [j for j in jobs if f.match(j)]
-    sample = (passing + [j for j in jobs if not f.match(j)])[:15]
+    if source["kind"] in fetchers.BOARD_KINDS:
+        for j in jobs:
+            j.company = j.company or source["name"]
+    # Show jobs that fit your role/level/location filters first (posting age is ignored here), with
+    # the full eligibility check (descriptions read, AI check if enabled) for the first few.
+    passing = [j for j in jobs if f.static_reason(j) is None]
+    sample = (passing + [j for j in jobs if f.static_reason(j) is not None])[:15]
     checked = passing[:8]
     verdicts = dict(zip((j.external_id for j in checked),
-                        checker.evaluate_jobs([(source, j) for j in checked], settings)))
+                        checker.evaluate_jobs([(source, j) for j in checked], settings, ai_usage=ai_usage)))
+    if ai_usage and ai_usage.calls:
+        with db.connect() as conn:
+            db.record_ai_usage(conn, ai_usage)
     out = []
     for j in sample:
         v = verdicts.get(j.external_id)
         out.append({"title": j.title, "location": j.location, "url": j.url, "posted_at": j.posted_at,
-                    "matches": bool(v and v.ok), "filter": f.reason(j),
+                    "matches": bool(v and v.ok), "filter": f.static_reason(j),
                     "visa": v.visa if v else None, "note": v.note if v else None})
     return {"job_count": len(jobs), "match_count": len(passing), "checked": len(checked), "sample": out}
+
+
+SAMPLE_POSTING = """Generative AI & RAG Engineer for a government agency in the Washington DC metro area. Remote.
+Required Qualifications: 4+ years developing production-grade NLP architectures and embedding models.
+Must be able to pass a federal background investigation prior to starting work.
+Work Authorization: Government customer requires U.S. citizenship to work on the program.
+Synectics is an equal opportunity employer."""
+
+
+@app.post("/api/test-ai", dependencies=Admin)
+def test_ai():
+    """One AI check on a sample posting (costs about $0.0003) to confirm the API key works."""
+    if not llm_check.configured():
+        raise HTTPException(400, "ANTHROPIC_API_KEY is not set in Vercel (see SETUP.md, step 9)")
+    usage = llm_check.Usage()
+    with db.connect() as conn:
+        settings = db.get_settings(conn)
+    facts = llm_check.check("Generative AI & RAG Engineer", "Synectics", SAMPLE_POSTING,
+                            int(settings.get("max_years_experience") or 2), usage)
+    with db.connect() as conn:
+        db.record_ai_usage(conn, usage)
+    if facts is None:
+        raise HTTPException(502, f"AI check failed: {usage.last_error}")
+    return {"ok": True, "facts": facts, "cost_usd": round(usage.cost_usd, 6),
+            "tokens": {"input": usage.input_tokens, "output": usage.output_tokens}}
 
 
 @app.get("/api/h1b", dependencies=Admin)
@@ -288,6 +327,10 @@ def save_settings(body: SettingsIn):
     for key in WORD_LIST_SETTINGS:
         values[key] = _clean_words(values[key])
     with db.connect() as conn:
+        # Entering a new credit amount restarts the "credit left" count from today.
+        current = db.get_settings(conn)
+        if float(current.get("ai_credit_usd") or 0) != values["ai_credit_usd"]:
+            values["ai_credit_set_on"] = datetime.now(timezone.utc).date().isoformat()
         # Apply a changed interval to companies that were already discovered, not just new ones.
         conn.execute(
             """UPDATE sources SET interval_minutes = CASE WHEN relevant_count = 0 THEN %(idle)s ELSE %(active)s END

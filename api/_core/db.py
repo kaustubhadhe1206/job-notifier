@@ -75,6 +75,16 @@ ALTER TABLE jobs ADD COLUMN IF NOT EXISTS channel TEXT;
 CREATE INDEX IF NOT EXISTS jobs_sheet_pending_idx ON jobs (first_seen_at) WHERE matched AND NOT sheet_synced;
 CREATE INDEX IF NOT EXISTS jobs_first_seen_idx ON jobs (first_seen_at DESC);
 CREATE INDEX IF NOT EXISTS jobs_pending_idx ON jobs (first_seen_at) WHERE matched AND NOT notified;
+-- Claude Haiku AI check: tokens and dollars per day (computed from each response's usage)
+CREATE TABLE IF NOT EXISTS ai_usage (
+    day           DATE PRIMARY KEY,
+    calls         INT NOT NULL DEFAULT 0,
+    errors        INT NOT NULL DEFAULT 0,
+    input_tokens  BIGINT NOT NULL DEFAULT 0,
+    output_tokens BIGINT NOT NULL DEFAULT 0,
+    cost_usd      DOUBLE PRECISION NOT NULL DEFAULT 0,
+    last_error    TEXT
+);
 CREATE TABLE IF NOT EXISTS settings (
     key   TEXT PRIMARY KEY,
     value JSONB NOT NULL
@@ -474,6 +484,41 @@ def claim_sheet_rows(conn, limit: int = 200) -> list[dict]:
 
 def unclaim_sheet(conn, job_ids: list[int]) -> None:
     conn.execute("UPDATE jobs SET sheet_synced = FALSE WHERE id = ANY(%s)", (job_ids,))
+
+
+def record_ai_usage(conn, usage) -> None:
+    conn.execute(
+        """INSERT INTO ai_usage (day, calls, errors, input_tokens, output_tokens, cost_usd, last_error)
+           VALUES (current_date, %s, %s, %s, %s, %s, %s)
+           ON CONFLICT (day) DO UPDATE SET calls = ai_usage.calls + EXCLUDED.calls,
+               errors = ai_usage.errors + EXCLUDED.errors,
+               input_tokens = ai_usage.input_tokens + EXCLUDED.input_tokens,
+               output_tokens = ai_usage.output_tokens + EXCLUDED.output_tokens,
+               cost_usd = ai_usage.cost_usd + EXCLUDED.cost_usd,
+               last_error = COALESCE(EXCLUDED.last_error, ai_usage.last_error)""",
+        (usage.calls, usage.errors, usage.input_tokens, usage.output_tokens, usage.cost_usd, usage.last_error or None),
+    )
+
+
+def ai_spend(conn) -> dict:
+    """AI check spend: today, this month, and since you last entered your credit balance."""
+    settings = get_settings(conn)
+    since = settings.get("ai_credit_set_on") or "1970-01-01"
+    row = conn.execute(
+        """SELECT COALESCE(sum(cost_usd) FILTER (WHERE day = current_date), 0) AS today_usd,
+                  COALESCE(sum(cost_usd) FILTER (WHERE day >= date_trunc('month', current_date)), 0) AS month_usd,
+                  COALESCE(sum(cost_usd) FILTER (WHERE day >= %s::date), 0) AS since_credit_usd,
+                  COALESCE(sum(calls) FILTER (WHERE day >= date_trunc('month', current_date)), 0) AS month_calls,
+                  COALESCE(sum(errors) FILTER (WHERE day = current_date), 0) AS today_errors,
+                  (SELECT last_error FROM ai_usage WHERE last_error IS NOT NULL ORDER BY day DESC LIMIT 1) AS last_error
+           FROM ai_usage""",
+        (since,),
+    ).fetchone()
+    credit = float(settings.get("ai_credit_usd") or 0)
+    row["credit_usd"] = credit
+    row["remaining_usd"] = round(credit - row["since_credit_usd"], 4) if credit > 0 else None
+    row["monthly_limit_usd"] = float(settings.get("ai_monthly_limit_usd") or 0)
+    return row
 
 
 def get_meta(conn, key: str):

@@ -169,6 +169,7 @@ function Dashboard({ onLogout }) {
             value={stats.blocked_24h + stats.unverified_24h}
             hint={`${stats.blocked_24h} not eligible · ${stats.unverified_24h} unverified`}
           />
+          <AiStat ai={data.ai} setup={setup} />
           <Stat
             label="CPU · 24h"
             value={`${(stats.cpu_ms_24h / 1000).toFixed(0)}s`}
@@ -196,7 +197,7 @@ function Dashboard({ onLogout }) {
 
         {tab === "jobs" && <JobsTab refreshKey={lastRun?.id} />}
         {tab === "sources" && <SourcesTab sources={sources} stats={stats} seed={data.seed} reload={load} notify={notify} />}
-        {tab === "settings" && <SettingsTab settings={data.settings} setup={setup} reload={load} notify={notify} />}
+        {tab === "settings" && <SettingsTab settings={data.settings} setup={setup} ai={data.ai} reload={load} notify={notify} />}
       </main>
 
       {toast && (
@@ -216,6 +217,16 @@ function StatusPill({ setup }) {
   if (!last) (cls = "warn"), (text = "Cron not set up yet");
   else if (minutes > 15) (cls = "bad"), (text = `Cron stalled · ${timeAgo(last.finished_at)}`);
   return <span className={`pill ${cls}`}><i />{text}</span>;
+}
+
+const usd = (n) => `$${Number(n || 0).toFixed(Number(n) < 1 ? 4 : 2)}`;
+
+function AiStat({ ai, setup }) {
+  if (!setup.ai_key) return <Stat label="AI check" value="Off" hint="Add ANTHROPIC_API_KEY to turn on" />;
+  if (ai.remaining_usd != null) {
+    return <Stat label="AI credit left (est.)" value={usd(ai.remaining_usd)} hint={`${usd(ai.month_usd)} this month · ${ai.month_calls} checks`} />;
+  }
+  return <Stat label="AI spend · month" value={usd(ai.month_usd)} hint={`${ai.month_calls} checks · enter your credit in Settings`} />;
 }
 
 function Stat({ label, value, hint }) {
@@ -745,7 +756,52 @@ function SheetCard({ setup, reload, notify }) {
 const toText = (list) => (list || []).join(", ");
 const toList = (text) => text.split(/[,\n]/).map((s) => s.trim()).filter(Boolean);
 
-function SettingsTab({ settings, setup, reload, notify }) {
+function AiCard({ ai, setup, reload, notify }) {
+  const [busy, setBusy] = useState(false);
+  async function test() {
+    setBusy(true);
+    try {
+      const r = await api("/api/test-ai", { method: "POST" });
+      const f = r.facts;
+      notify(`AI check works (${usd(r.cost_usd)}). Sample posting → citizenship required: ${f.citizenship_required ? "yes" : "no"}, clearance: ${f.clearance_required ? "yes" : "no"}, min years: ${f.min_years_required}.`);
+      reload();
+    } catch (err) {
+      notify(err.message, "error");
+    } finally {
+      setBusy(false);
+    }
+  }
+  return (
+    <section className="card">
+      <div className="row wrap">
+        <div className="grow">
+          <h3>AI check (Claude Haiku)</h3>
+          <p className="muted small">
+            {setup.ai_key
+              ? "Every job that passes the rules is also read by Claude Haiku, which catches citizenship, clearance, sponsorship and years-of-experience requirements the rules miss. About $0.0002–0.001 per job."
+              : "Off: add ANTHROPIC_API_KEY in Vercel and redeploy (SETUP.md, step 9). Until then jobs are checked by the rules only."}
+          </p>
+        </div>
+        <button className="btn" onClick={test} disabled={busy || !setup.ai_key}>{busy ? "Testing…" : "Test AI check"}</button>
+      </div>
+      {setup.ai_key && (
+        <div className="discovery-grid">
+          <div><strong>{usd(ai.today_usd)}</strong><span>spent today</span></div>
+          <div><strong>{usd(ai.month_usd)}</strong><span>this month ({ai.month_calls} checks)</span></div>
+          <div><strong>{ai.remaining_usd != null ? usd(ai.remaining_usd) : "—"}</strong><span>credit left (estimate)</span></div>
+          <div><strong>{ai.monthly_limit_usd ? usd(ai.monthly_limit_usd) : "none"}</strong><span>monthly limit</span></div>
+        </div>
+      )}
+      {ai.today_errors > 0 && ai.last_error && <p className="small error">Last AI error: {ai.last_error}</p>}
+      <p className="small muted">
+        "Credit left" is your entered credit minus what this app has spent since you entered it. Anthropic doesn't offer an
+        API for the exact balance; check <a href="https://console.anthropic.com/settings/billing" target="_blank" rel="noreferrer">Console → Billing</a>.
+      </p>
+    </section>
+  );
+}
+
+function SettingsTab({ settings, setup, ai, reload, notify }) {
   const [form, setForm] = useState(() => ({
     ...settings,
     include_keywords: toText(settings.include_keywords),
@@ -777,6 +833,8 @@ function SettingsTab({ settings, setup, reload, notify }) {
           max_age_minutes: Number(form.max_age_minutes) || 60,
           auto_interval_minutes: Number(form.auto_interval_minutes) || 15,
           auto_idle_interval_minutes: Number(form.auto_idle_interval_minutes) || 360,
+          ai_monthly_limit_usd: Number(form.ai_monthly_limit_usd) || 0,
+          ai_credit_usd: Number(form.ai_credit_usd) || 0,
         },
       });
       notify("Settings saved. New filters apply to jobs found from now on.");
@@ -804,6 +862,7 @@ function SettingsTab({ settings, setup, reload, notify }) {
 
   return (
     <>
+      <AiCard ai={ai} setup={setup} reload={reload} notify={notify} />
       <SheetCard setup={setup} reload={reload} notify={notify} />
       <form className="card settings" onSubmit={save}>
         <h3>Notifications</h3>
@@ -881,6 +940,21 @@ function SettingsTab({ settings, setup, reload, notify }) {
           <span>Companies you know sponsor (treated as sponsors even without H-1B records)</span>
           <input value={form.sponsor_companies} onChange={set("sponsor_companies")} placeholder="e.g. LiveKit, Mastra" />
         </label>
+
+        <h3>AI check</h3>
+        <label className="check-field">
+          <input type="checkbox" checked={form.ai_check} onChange={set("ai_check")} /> Double-check jobs with Claude Haiku before emailing (needs ANTHROPIC_API_KEY)
+        </label>
+        <div className="grid-3">
+          <label className="field">
+            <span>Credit you loaded in the Anthropic Console ($)</span>
+            <input type="number" min="0" step="0.01" value={form.ai_credit_usd} onChange={set("ai_credit_usd")} placeholder="e.g. 5" />
+          </label>
+          <label className="field">
+            <span>Monthly spending limit ($, 0 = no limit)</span>
+            <input type="number" min="0" step="0.5" value={form.ai_monthly_limit_usd} onChange={set("ai_monthly_limit_usd")} />
+          </label>
+        </div>
 
         <h3>Discovery</h3>
         <label className="check-field"><input type="checkbox" checked={form.auto_discover} onChange={set("auto_discover")} /> Automatically find and watch company career pages (from LinkedIn, the feeds and the Common Crawl web index)</label>

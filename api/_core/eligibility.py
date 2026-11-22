@@ -265,6 +265,30 @@ class Verdict:
     note: str    # short human explanation shown in the email and dashboard
 
 
+def apply_ai(verdict: Verdict, facts: dict, settings: dict) -> Verdict:
+    """Combine the rule verdict with Claude Haiku's reading of the posting. The AI can only add
+    restrictions (or confirm sponsorship); it never overrides a rule that already blocked a job."""
+    if not verdict.ok:
+        return verdict
+    quote = (facts.get("evidence") or "").strip()
+    quote = f": “{quote[:300]}”" if quote else ""
+    if settings.get("skip_ineligible", True):
+        if facts.get("citizenship_required"):
+            return Verdict(False, "blocked", f"AI check: US citizens / green card / US persons only{quote}")
+        if facts.get("clearance_required"):
+            return Verdict(False, "blocked", f"AI check: needs a security clearance or federal background check{quote}")
+        if facts.get("sponsorship") == "will_not_sponsor" and (settings.get("visa_mode") or "allow_unknown") != "off":
+            return Verdict(False, "blocked", f"AI check: says no visa sponsorship{quote}")
+    max_years = int(settings.get("max_years_experience") or 0)
+    years = facts.get("min_years_required")
+    if max_years > 0 and isinstance(years, int) and years > max_years:
+        return Verdict(False, "blocked", f"AI check: asks for {years}+ years of experience{quote}")
+    if facts.get("sponsorship") == "will_sponsor" and verdict.visa in ("unknown", "history", "listed"):
+        return Verdict(True, "stated", f"AI check: posting says it sponsors visas{quote}")
+    suffix = " (AI-checked)" if not facts.get("truncated") else " (AI-checked first 30,000 characters)"
+    return Verdict(verdict.ok, verdict.visa, (verdict.note + suffix) if verdict.note else suffix.strip(" ()"))
+
+
 def evaluate(title: str, company: str, description: str, settings: dict, loose: bool = False) -> Verdict:
     mode = settings.get("visa_mode") or "allow_unknown"  # allow_unknown | require | off
     text = f"{title}. {description or ''}"

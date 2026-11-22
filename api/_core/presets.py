@@ -36,6 +36,11 @@ DEFAULT_SETTINGS = {
                                   # require: only email jobs with evidence of sponsorship
                                   # off: ignore sponsorship entirely
     "sponsor_companies": [],      # companies you know sponsor (treated as sponsors)
+    # AI check (Claude Haiku): reads each job that passes the rules; needs ANTHROPIC_API_KEY
+    "ai_check": True,
+    "ai_monthly_limit_usd": 2.0,  # stop AI checks for the rest of the month after this much spend (0 = no limit)
+    "ai_credit_usd": 0.0,         # credit you loaded in the Anthropic Console (for the "credit left" estimate)
+    "ai_credit_set_on": "",       # set automatically when you change ai_credit_usd
     "auto_discover": True,        # add company boards found in feeds to the watch list
     "auto_interval_minutes": 15,  # discovered companies with US engineering openings: checked this often
     "auto_idle_interval_minutes": 360,  # discovered companies without any: checked this often
