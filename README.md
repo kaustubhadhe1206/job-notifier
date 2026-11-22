@@ -11,7 +11,7 @@ Everything runs on free tiers: **Vercel** (React dashboard + Python API), **Supa
 1. **Discovery feeds** – Hacker News "Who is hiring", Y Combinator startup job posts, RemoteOK, Himalayas, We Work Remotely, plus LinkedIn searches for "Software Engineer" and "AI Engineer" in the United States. These are full of small companies.
 2. **Auto-discovery** – when a feed post links to a company's own job board (Greenhouse, Lever, Ashby, Workable, SmartRecruiters, Recruitee, Workday), that company is added to the watch list automatically. From then on its new postings are caught on the company's own board, usually before they reach LinkedIn. The list grows by itself every day.
 3. **Your companies** – type a company name or paste a careers URL in the dashboard. These are checked every minute.
-4. **Filters** – only jobs whose title matches your role keywords, located in the US (or remote open to the US) and posted in the last 7 days are considered. All of this is editable in Settings.
+4. **Filters** – only jobs whose title matches your role keywords, located in the US (or remote open to the US), entry level (no Senior/Staff/Lead titles, at most 2 years of experience required) and **posted within the last 60 minutes** are considered. All of this is editable in Settings.
 5. **Work authorization (F-1 → H-1B)** – for every job that passes the filters, the full description is read before anything is emailed:
    - **Skipped** if it needs a security clearance (TS/SCI, Secret, polygraph, public trust…), US citizenship, a green card / permanent residency, or "US persons" (ITAR / export control), or if it says there's no visa sponsorship ("must be authorized to work without sponsorship", "no OPT/H-1B", …). Defense contractors and ITAR-bound companies (Lockheed, Raytheon, Booz Allen, SpaceX, Anduril…) are on the company block list by default.
    - **Emailed** otherwise, labeled by sponsorship evidence: the posting says so ("we sponsor visas", "visa sponsorship available", HN posts tagged VISA, "OPT welcome"), the company is on your own sponsor list, the company had H-1B approvals in USCIS data (FY2021–23, about 85,000 employers), or "sponsorship not mentioned". Confirmed sponsors are listed first in each email.
@@ -20,7 +20,11 @@ Everything runs on free tiers: **Vercel** (React dashboard + Python API), **Supa
 
    By default (**Everything without restrictions**), jobs that say nothing about sponsorship are emailed too. Not mentioning it doesn't guarantee sponsorship, which is why each job is labeled. For only confirmed sponsors, switch Settings → Visa sponsorship to **Only confirmed sponsors**.
 
-The first time a source is checked, its existing jobs are recorded but **not** emailed (except ones posted in the last 48 h). After that, every new posting that matches is emailed. Several jobs found in the same minute arrive as one email.
+**Freshness (only jobs posted minutes ago):** a job is emailed only if it's provably fresh:
+- it just appeared on a company board that is checked every 1–15 minutes (and, if the board gives an exact publish time, that time is within 60 minutes), or
+- LinkedIn / a job feed shows an exact posting time within the last 60 minutes ("23 minutes ago"). LinkedIn searches only ask for jobs from the past hour.
+
+Jobs without proof of freshness ("posted today", no date, jobs already open when a company is first discovered) are tracked but never emailed. The window is editable in Settings.
 
 ## Deploy
 

@@ -28,7 +28,7 @@ DEFAULT_SETTINGS = {
     ],
     "max_years_experience": 2,    # skip jobs whose description requires more years than this (0 = don't check)
     "us_only": True,
-    "max_age_days": 7,            # ignore postings older than this (when the date is known)
+    "max_age_minutes": 60,        # only email jobs posted within this many minutes (see filters._freshness)
     # Work authorization (F-1 student who will need H-1B sponsorship)
     "skip_ineligible": True,      # skip jobs needing clearance, US citizenship/green card, or saying "no sponsorship"
     "visa_mode": "allow_unknown", # allow_unknown: email every job without restrictions; jobs that don't

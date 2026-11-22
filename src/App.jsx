@@ -688,7 +688,7 @@ function SettingsTab({ settings, setup, reload, notify }) {
           sponsor_companies: toList(form.sponsor_companies),
           seniority_exclude: toList(form.seniority_exclude),
           max_years_experience: Number(form.max_years_experience) || 0,
-          max_age_days: Number(form.max_age_days) || 0,
+          max_age_minutes: Number(form.max_age_minutes) || 60,
           auto_interval_minutes: Number(form.auto_interval_minutes) || 15,
         },
       });
@@ -753,8 +753,8 @@ function SettingsTab({ settings, setup, reload, notify }) {
             <input value={form.location_keywords} onChange={set("location_keywords")} placeholder="e.g. Toronto" />
           </label>
           <label className="field">
-            <span>Ignore postings older than (days)</span>
-            <input type="number" min="0" max="365" value={form.max_age_days} onChange={set("max_age_days")} />
+            <span>Only email jobs posted within the last (minutes)</span>
+            <input type="number" min="5" max="1440" value={form.max_age_minutes} onChange={set("max_age_minutes")} />
           </label>
         </div>
 

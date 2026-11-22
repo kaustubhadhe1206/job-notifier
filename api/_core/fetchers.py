@@ -92,6 +92,20 @@ def _get(c: httpx.Client, url: str, ctx: FetchCtx | None = None, **kw) -> httpx.
     return r
 
 
+class DateOnly(datetime):
+    """A posting date without a time of day (e.g. LinkedIn's '2026-11-22', Workday's 'Posted Today').
+    It can't prove a job was posted minutes ago, so the freshness filter treats it as unknown."""
+
+
+class Unverified(datetime):
+    """A timestamp that isn't the publish time (Lever's createdAt is when the posting was drafted,
+    which can be hours before it goes live), so it can't prove freshness either."""
+
+
+def is_precise(dt: datetime | None) -> bool:
+    return dt is not None and not isinstance(dt, (DateOnly, Unverified))
+
+
 def _dt(value) -> datetime | None:
     """Parse ISO strings, 'YYYY-MM-DD HH:MM:SS UTC', RFC 822 dates and epoch seconds/ms."""
     if value in (None, ""):
@@ -103,6 +117,9 @@ def _dt(value) -> datetime | None:
         s = str(value).strip()
         if re.match(r"^[A-Za-z]{3}, \d", s):
             return parsedate_to_datetime(s)
+        if re.fullmatch(r"\d{4}-\d{2}-\d{2}", s):
+            y, m, d = map(int, s.split("-"))
+            return DateOnly(y, m, d, tzinfo=timezone.utc)
         s = s.replace("Z", "+00:00")
         if s.endswith(" UTC"):
             s = s[:-4]
@@ -110,6 +127,22 @@ def _dt(value) -> datetime | None:
         return d if d.tzinfo else d.replace(tzinfo=timezone.utc)
     except (ValueError, OverflowError, OSError, TypeError):
         return None
+
+
+_RELATIVE_UNITS = {"second": 1 / 60, "minute": 1, "hour": 60, "day": 1440, "week": 10080, "month": 43200}
+
+
+def _relative_time(text: str) -> datetime | None:
+    """'23 minutes ago' / '2 hours ago' / 'Just now' (as shown on LinkedIn cards) -> datetime."""
+    t = (text or "").strip().lower()
+    now = datetime.now(timezone.utc)
+    if t in ("just now", "moments ago", "now"):
+        return now
+    m = re.search(r"(\d+)\+?\s*(second|minute|min|hour|hr|day|week|month)s?\b", t)
+    if not m:
+        return None
+    unit = {"min": "minute", "hr": "hour"}.get(m.group(2), m.group(2))
+    return now - timedelta(minutes=int(m.group(1)) * _RELATIVE_UNITS[unit])
 
 
 def _join(*parts) -> str:
@@ -148,8 +181,9 @@ def fetch_lever(c, cfg, ctx):
             loc = _join(loc, "Remote")
         desc = " ".join([j.get("descriptionPlain") or "", *[f"{x.get('text', '')} {x.get('content', '')}" for x in j.get("lists") or []],
                          j.get("additionalPlain") or ""])
-        jobs.append(Job(j["id"], j.get("text") or "", j.get("hostedUrl") or "", loc, "", _dt(j.get("createdAt")),
-                        description=desc))
+        created = j.get("createdAt")
+        posted = Unverified.fromtimestamp(created / 1000, tz=timezone.utc) if isinstance(created, (int, float)) else None
+        jobs.append(Job(j["id"], j.get("text") or "", j.get("hostedUrl") or "", loc, "", posted, description=desc))
     return jobs
 
 
@@ -214,14 +248,16 @@ def fetch_recruitee(c, cfg, ctx):
 
 
 def _workday_posted(text: str) -> datetime | None:
+    """'Posted Today' / 'Posted Yesterday' / 'Posted 3 Days Ago': day precision only."""
     t = (text or "").lower()
-    now = datetime.now(timezone.utc)
-    if "today" in t:
-        return now
-    if "yesterday" in t:
-        return now - timedelta(days=1)
-    m = re.search(r"(\d+)\+?\s*days?", t)
-    return now - timedelta(days=int(m.group(1))) if m else None
+    days = 0 if "today" in t else 1 if "yesterday" in t else None
+    if days is None:
+        m = re.search(r"(\d+)\+?\s*days?", t)
+        days = int(m.group(1)) if m else None
+    if days is None:
+        return None
+    d = datetime.now(timezone.utc) - timedelta(days=days)
+    return DateOnly(d.year, d.month, d.day, tzinfo=timezone.utc)
 
 
 def fetch_workday(c, cfg, ctx):
@@ -347,7 +383,10 @@ def fetch_weworkremotely(c, cfg, ctx):
 
 
 def fetch_linkedin(c, cfg, ctx):
-    """LinkedIn's public (logged-out) job search, newest first, last 24h.
+    """LinkedIn's public (logged-out) job search, newest first, posted within the last hour.
+
+    (With a 24h window LinkedIn's "most recent" results were 3-10 hours old; the past-hour
+    filter returns jobs posted 20-60 minutes ago.)
 
     LinkedIn's terms forbid automated access and it rate-limits datacenter IPs, so this is
     best-effort: keep the interval at 10+ minutes.
@@ -355,7 +394,7 @@ def fetch_linkedin(c, cfg, ctx):
     jobs = []
     for page in range(int(cfg.get("pages", 3))):
         params = {"keywords": cfg.get("keywords", ""), "location": cfg.get("location", ""),
-                  "f_TPR": "r86400", "sortBy": "DD", "start": page * 10}
+                  "f_TPR": f"r{int(cfg.get('within_seconds', 3600))}", "sortBy": "DD", "start": page * 10}
         if cfg.get("geo_id"):
             params["geoId"] = cfg["geo_id"]
         if cfg.get("remote"):
@@ -383,10 +422,13 @@ def fetch_linkedin(c, cfg, ctx):
             if not m or not title:
                 continue
             time_node = card.select_one("time")
+            # The card says "23 minutes ago"; the datetime attribute only has the date.
+            posted = _relative_time(_text(time_node)) if time_node else None
+            if posted is None and time_node:
+                posted = _dt(time_node.get("datetime"))
             jobs.append(Job(m.group(1), title, href or f"https://www.linkedin.com/jobs/view/{m.group(1)}/",
                             _text(card.select_one(".job-search-card__location")),
-                            _text(card.select_one(".base-search-card__subtitle")),
-                            _dt(time_node.get("datetime")) if time_node else None))
+                            _text(card.select_one(".base-search-card__subtitle")), posted))
         if len(jobs) == before:
             break
     return jobs
@@ -477,6 +519,9 @@ FETCHERS = {
 
 BOARD_KINDS = {"greenhouse", "lever", "ashby", "workable", "smartrecruiters", "recruitee", "workday"}
 FEED_KINDS = set(FETCHERS) - BOARD_KINDS  # feeds are scanned for links to new company boards
+# Sources that list a company's own openings: a job that newly appears between two checks was
+# just posted, even when the site gives no exact posting time.
+OBSERVED_KINDS = BOARD_KINDS | {"generic"}
 
 REQUIRED_CONFIG = {
     "greenhouse": ["board"],
@@ -520,7 +565,7 @@ def public_url(kind: str, cfg: dict) -> str:
         "himalayas": lambda: "https://himalayas.app/jobs",
         "weworkremotely": lambda: "https://weworkremotely.com/categories/remote-programming-jobs",
         "linkedin": lambda: "https://www.linkedin.com/jobs/search/?" + str(httpx.QueryParams(
-            {"keywords": cfg.get("keywords", ""), "location": cfg.get("location", ""), "f_TPR": "r86400", "sortBy": "DD"})),
+            {"keywords": cfg.get("keywords", ""), "location": cfg.get("location", ""), "f_TPR": "r3600", "sortBy": "DD"})),
         "generic": lambda: cfg["url"],
     }
     try:

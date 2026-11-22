@@ -1,14 +1,10 @@
-"""Decides which new jobs are worth an email: role keywords, US location, recency."""
+"""Decides which new jobs are worth an email: role keywords, US location, and freshness."""
 from __future__ import annotations
 
 import re
 from datetime import datetime, timedelta, timezone
 
-from .fetchers import Job
-
-# Jobs that were already open when a board was first discovered are only emailed if they
-# were posted within this window (older ones are assumed to be stale).
-BASELINE_RECENT = timedelta(hours=48)
+from .fetchers import Job, is_precise
 
 US_STATES = (
     "Alabama|Alaska|Arizona|Arkansas|California|Colorado|Connecticut|Delaware|Florida|Georgia|Hawaii|"
@@ -88,10 +84,8 @@ class Filters:
         self.companies = _keyword_re(settings.get("exclude_companies"))
         self.seniority = _keyword_re(settings.get("seniority_exclude"))
         self.us_only = bool(settings.get("us_only"))
-        days = settings.get("max_age_days") or 0
-        now = datetime.now(timezone.utc)
-        self.oldest = now - timedelta(days=days) if days > 0 else None
-        self.baseline_oldest = now - BASELINE_RECENT
+        self.max_age = timedelta(minutes=int(settings.get("max_age_minutes") or 60))
+        self.now = datetime.now(timezone.utc)
 
     def _location_ok(self, job: Job) -> bool:
         if not (self.us_only or self.location):
@@ -102,8 +96,25 @@ class Filters:
             return True
         return self.us_only and is_us_location(job.location)
 
-    def reason(self, job: Job, baseline: bool = False) -> str | None:
-        """Why this job is filtered out, or None if it passes the title/location/age filters."""
+    def _freshness(self, job: Job, observed: bool) -> str | None:
+        """Only jobs posted minutes ago get through.
+
+        An exact publish time must be within max_age, wherever the job came from.
+        Without one (Workday "Posted Today", Lever's draft date, plain career pages), a job is
+        accepted only if it just appeared on a company board we check every few minutes
+        (observed=True); from LinkedIn, feeds or a board seen for the first time it isn't."""
+        posted = job.posted_at
+        age = self.now - posted if is_precise(posted) else None
+        if age is None:
+            return None if observed else "No exact posting time, so it can't be confirmed as fresh"
+        if age > self.max_age:
+            mins = int(age.total_seconds() // 60)
+            when = f"{mins} min" if mins < 120 else f"{mins // 60} h" if mins < 2880 else f"{mins // 1440} days"
+            return f"Posted {when} ago (older than {int(self.max_age.total_seconds() // 60)} min)"
+        return None
+
+    def reason(self, job: Job, baseline: bool = False, observed: bool = False) -> str | None:
+        """Why this job is filtered out, or None if it passes the title/location/freshness filters."""
         if self.include and not self.include.search(job.title):
             return "Title doesn't match your roles"
         if self.seniority and not job.loose:  # multi-role HN posts are judged by their description instead
@@ -118,11 +129,7 @@ class Filters:
             return "Company is on your block list"
         if not self._location_ok(job):
             return "Not in the US"
-        if self.oldest and job.posted_at and job.posted_at < self.oldest:
-            return "Posted too long ago"
-        if baseline and not (job.posted_at and job.posted_at >= self.baseline_oldest):
-            return "Already open when this source was added"
-        return None
+        return self._freshness(job, observed=observed and not baseline)
 
     def _senior_word(self, title: str) -> str | None:
         for m in self.seniority.finditer(title):
@@ -133,5 +140,5 @@ class Filters:
         m = LEVEL_RE.search(title)
         return m.group(0) if m else None
 
-    def match(self, job: Job, baseline: bool = False) -> bool:
-        return self.reason(job, baseline) is None
+    def match(self, job: Job, baseline: bool = False, observed: bool = False) -> bool:
+        return self.reason(job, baseline, observed) is None

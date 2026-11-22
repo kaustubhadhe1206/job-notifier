@@ -7,7 +7,7 @@ import re
 import time
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from . import db, detect, eligibility, fetchers, notifier, sheets
 from .filters import Filters
@@ -36,6 +36,16 @@ def fetch_source(source: dict) -> FetchResult:
         return FetchResult(not_modified=True, etag=source.get("etag"))
     except Exception as e:  # noqa: BLE001 - recorded on the source and shown in the UI
         return FetchResult(error=fetchers.describe_error(e))
+
+
+def _recently_checked(source: dict) -> bool:
+    """True if the previous successful check was recent, so anything new appeared since then.
+    After a long gap (paused source, stalled cron) new jobs could be hours old."""
+    last = source.get("last_success_at")
+    if not last:
+        return False
+    gap = datetime.now(timezone.utc) - last
+    return gap <= timedelta(minutes=2 * int(source.get("interval_minutes") or 1) + 15)
 
 
 def _ids_hash(jobs) -> str:
@@ -120,12 +130,13 @@ def run_check(trigger: str = "cron", force: bool = False, source_ids: list[int] 
                 continue
 
             # First successful fetch = baseline: jobs that were already open are only emailed
-            # if they were posted in the last 48h (see filters.BASELINE_RECENT).
+            # if their exact posting time is within max_age_minutes (see filters._freshness).
             baseline = not source["initialized"]
             if source["kind"] in fetchers.BOARD_KINDS:
                 for j in res.jobs:  # company boards: the company is the board itself
                     j.company = j.company or source["name"]
-            reasons = {j.external_id: filters.reason(j, baseline=baseline) for j in res.jobs}
+            observed = source["kind"] in fetchers.OBSERVED_KINDS and _recently_checked(source)
+            reasons = {j.external_id: filters.reason(j, baseline=baseline, observed=observed) for j in res.jobs}
             # Jobs start unmatched; candidates are decided below after reading their descriptions.
             rows = [{
                 "external_id": j.external_id,
@@ -133,7 +144,7 @@ def run_check(trigger: str = "cron", force: bool = False, source_ids: list[int] 
                 "company": (j.company or "")[:200],
                 "location": (j.location or "")[:300],
                 "url": j.url,
-                "posted_at": j.posted_at.isoformat() if j.posted_at else None,
+                "posted_at": j.posted_at.isoformat() if fetchers.is_precise(j.posted_at) else None,
                 "baseline": baseline,
                 "matched": False,
                 "note": None if baseline else reasons[j.external_id],
