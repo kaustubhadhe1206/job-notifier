@@ -161,6 +161,19 @@ select { padding: 6px 8px; font-size: 13px; }
 .visa-history { color: var(--good); }
 .badge.bad { color: var(--bad); background: var(--bad-bg); border-color: transparent; }
 .test-note { margin-left: 14px; }
+.channel {
+  display: inline-block; margin: 0 8px 2px 0; padding: 1px 8px; border-radius: 99px; vertical-align: 1px;
+  font-size: 10.5px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.04em;
+}
+.ch-hidden { color: #6d28d9; background: #ede9fe; }
+.ch-watchlist { color: #b45309; background: #fef3c7; }
+.ch-linkedin { color: #0a66c2; background: #e8f1fb; }
+.ch-jobboard { color: var(--muted); background: var(--surface-2); }
+@media (prefers-color-scheme: dark) {
+  .ch-hidden { color: #c4b5fd; background: #2e1f57; }
+  .ch-watchlist { color: #fcd34d; background: #3a2a0a; }
+  .ch-linkedin { color: #93c5fd; background: #0f2a47; }
+}
 .discovery-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; margin: 10px 0 6px; }
 .discovery-grid div { display: flex; flex-direction: column; padding: 10px 12px; background: var(--surface-2); border-radius: 8px; }
 .discovery-grid strong { font-size: 18px; font-variant-numeric: tabular-nums; }

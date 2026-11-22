@@ -13,7 +13,7 @@ from psycopg.rows import dict_row
 from psycopg.types.json import Jsonb
 
 from . import fetchers
-from .presets import DEFAULT_SETTINGS, LINKEDIN_ENTRY_LEVELS, PRESET_SOURCES, PRESET_VERSION
+from .presets import DEFAULT_SETTINGS, LINKEDIN_ENTRY_LEVELS, PRESET_SOURCES, PRESET_VERSION, WATCHLIST
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS sources (
@@ -70,6 +70,8 @@ ALTER TABLE jobs ADD COLUMN IF NOT EXISTS checks INT NOT NULL DEFAULT 0;   -- at
 ALTER TABLE jobs ADD COLUMN IF NOT EXISTS checked_at TIMESTAMPTZ;
 CREATE INDEX IF NOT EXISTS jobs_visa_pending_idx ON jobs (first_seen_at) WHERE visa = 'pending';
 ALTER TABLE jobs ADD COLUMN IF NOT EXISTS sheet_synced BOOLEAN NOT NULL DEFAULT FALSE;
+-- where the job was found: hidden | hidden_new | watchlist | linkedin | jobboard
+ALTER TABLE jobs ADD COLUMN IF NOT EXISTS channel TEXT;
 CREATE INDEX IF NOT EXISTS jobs_sheet_pending_idx ON jobs (first_seen_at) WHERE matched AND NOT sheet_synced;
 CREATE INDEX IF NOT EXISTS jobs_first_seen_idx ON jobs (first_seen_at DESC);
 CREATE INDEX IF NOT EXISTS jobs_pending_idx ON jobs (first_seen_at) WHERE matched AND NOT notified;
@@ -97,7 +99,7 @@ SOURCE_COLS = """s.id, s.name, s.kind, s.config, s.url, s.origin, s.board_key, s
     s.last_job_count, s.relevant_count, s.created_at"""
 
 JOB_COLS = """j.id, j.title, COALESCE(NULLIF(j.company, ''), s.name) AS company, j.location, j.url,
-    j.posted_at, j.first_seen_at, j.baseline, j.matched, j.notified, j.notified_at, j.visa, j.note,
+    j.posted_at, j.first_seen_at, j.baseline, j.matched, j.notified, j.notified_at, j.visa, j.note, j.channel,
     s.name AS source_name, s.kind AS source_kind, s.origin AS source_origin"""
 
 AUTO_DISABLE_AFTER_ERRORS = 5
@@ -136,12 +138,28 @@ def _add_preset(conn, p: dict) -> None:
     )
 
 
+def _add_watchlist(conn) -> None:
+    """Add the big tech companies as your own companies (promoting any auto-discovered copy)."""
+    for name, kind, config, interval in WATCHLIST:
+        key = fetchers.board_key(kind, config)
+        if key is None and conn.execute("SELECT 1 FROM sources WHERE name = %s", (name,)).fetchone():
+            continue
+        conn.execute(
+            """INSERT INTO sources (name, kind, config, url, origin, board_key, interval_minutes)
+               VALUES (%s, %s, %s, %s, 'manual', %s, %s)
+               ON CONFLICT (board_key) DO UPDATE SET origin = 'manual', name = EXCLUDED.name,
+                   interval_minutes = EXCLUDED.interval_minutes, enabled = TRUE""",
+            (name, kind, Jsonb(config), fetchers.public_url(kind, config), key, interval),
+        )
+
+
 def _migrate_presets(conn, fresh: bool) -> None:
     """Fresh database: add all default feeds. Existing database: apply preset changes made since
     it was created, once (tracked by the _presets_version setting)."""
     if fresh:
         for p in PRESET_SOURCES:
             _add_preset(conn, p)
+        _add_watchlist(conn)
         version = PRESET_VERSION
     else:
         row = conn.execute("SELECT value FROM settings WHERE key = '_presets_version'").fetchone()
@@ -158,6 +176,8 @@ def _migrate_presets(conn, fresh: bool) -> None:
         for p in PRESET_SOURCES:
             if p.get("since_version", 1) > version:
                 _add_preset(conn, p)
+        if version < 3:
+            _add_watchlist(conn)  # v3: big tech watchlist
         version = PRESET_VERSION
     conn.execute(
         "INSERT INTO settings (key, value) VALUES ('_presets_version', %s) "
@@ -381,11 +401,13 @@ def insert_jobs(conn, source_id: int, rows: list[dict]) -> list[dict]:
     if not rows:
         return []
     return conn.execute(
-        """INSERT INTO jobs (source_id, external_id, title, company, location, url, posted_at, baseline, matched, note)
-           SELECT %(sid)s, r.external_id, r.title, r.company, r.location, r.url, r.posted_at, r.baseline, r.matched, r.note
+        """INSERT INTO jobs (source_id, external_id, title, company, location, url, posted_at, baseline, matched, note,
+                            channel)
+           SELECT %(sid)s, r.external_id, r.title, r.company, r.location, r.url, r.posted_at, r.baseline, r.matched, r.note,
+                  r.channel
            FROM jsonb_to_recordset(%(rows)s) AS r(external_id text, title text, company text, location text,
                                                 url text, posted_at timestamptz, baseline boolean, matched boolean,
-                                                note text)
+                                                note text, channel text)
            ON CONFLICT (source_id, external_id) DO NOTHING
            RETURNING id, external_id, title, matched""",
         {"sid": source_id, "rows": Jsonb(rows)},
@@ -469,7 +491,8 @@ def set_meta(conn, key: str, value) -> None:
 def recent_jobs(conn, view: str = "matched", limit: int = 200) -> list[dict]:
     where = {
         "matched": "j.matched",
-        "review": "NOT j.matched AND j.visa IN ('blocked', 'unknown', 'pending')",
+        "hidden": "j.matched AND j.channel IN ('hidden', 'hidden_new')",
+        "review":"NOT j.matched AND j.visa IN ('blocked', 'unknown', 'pending')",
         "new": "NOT j.baseline OR j.matched OR j.visa IS NOT NULL",
         "all": "TRUE",
     }.get(view, "j.matched")

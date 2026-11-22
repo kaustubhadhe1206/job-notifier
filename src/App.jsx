@@ -277,6 +277,7 @@ function JobsTab({ refreshKey }) {
         <div className="segmented">
           {[
             ["matched", "Matches"],
+            ["hidden", "Hidden only"],
             ["review", "Skipped (not eligible)"],
             ["new", "All new postings"],
             ["all", "Everything tracked"],
@@ -300,6 +301,7 @@ function JobsTab({ refreshKey }) {
           {jobs.map((j) => (
             <li key={j.id} className="job">
               <div className="job-main">
+                <ChannelBadge channel={j.channel} />
                 <a href={j.url} target="_blank" rel="noreferrer" className="job-title">{j.title}</a>
                 <div className="job-meta">
                   <strong>{j.company}</strong>
@@ -337,6 +339,20 @@ const VISA = {
   blocked: ["bad", "Not eligible"],
   pending: ["dim", "Checking…"],
 };
+
+const CHANNELS = {
+  hidden_new: ["Hidden · first opening", "Found on a company's own career page; the company had no US engineering openings until now"],
+  hidden: ["Hidden", "Found on a discovered company's own career page, usually before LinkedIn"],
+  watchlist: ["Watchlist", "A company you added"],
+  linkedin: ["LinkedIn", "Found through LinkedIn search"],
+  jobboard: ["Job board", "Hacker News, YC, RemoteOK, We Work Remotely or Himalayas"],
+};
+
+function ChannelBadge({ channel }) {
+  if (!CHANNELS[channel]) return null;
+  const [label, title] = CHANNELS[channel];
+  return <span className={`channel ch-${channel.replace("_new", "")}`} title={title}>{label}</span>;
+}
 
 function VisaBadge({ visa }) {
   if (!VISA[visa]) return null;

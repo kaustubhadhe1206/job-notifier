@@ -53,6 +53,16 @@ VISA_LABELS = {
 }
 
 
+# Where the job was found: (label, text color, background)
+CHANNEL_LABELS = {
+    "hidden_new": ("Hidden · first opening", "#6d28d9", "#ede9fe"),
+    "hidden": ("Hidden", "#6d28d9", "#ede9fe"),
+    "watchlist": ("Watchlist", "#b45309", "#fef3c7"),
+    "linkedin": ("LinkedIn", "#0a66c2", "#e8f1fb"),
+    "jobboard": ("Job board", "#374151", "#f3f4f6"),
+}
+
+
 def _ago(dt: datetime | None) -> str:
     if not dt:
         return ""
@@ -67,9 +77,12 @@ def _ago(dt: datetime | None) -> str:
 def send_jobs_email(to: str, jobs: list[dict], app_url: str = "") -> None:
     n = len(jobs)
     first = jobs[0]
-    subject = f"New job: {first['title']} @ {first['company']}"
+    hidden = sum(1 for j in jobs if (j.get("channel") or "").startswith("hidden"))
+    tag = f"[{CHANNEL_LABELS[first['channel']][0]}] " if first.get("channel") in CHANNEL_LABELS else ""
+    subject = f"{tag}New job: {first['title']} @ {first['company']}"
     if n > 1:
-        subject = f"{n} new jobs: {first['title']} @ {first['company']} + {n - 1} more"
+        subject = (f"{n} new jobs{f' ({hidden} hidden)' if hidden else ''}: "
+                   f"{first['title']} @ {first['company']} + {n - 1} more")
 
     text_lines, rows = [], []
     for j in jobs:
@@ -77,12 +90,17 @@ def send_jobs_email(to: str, jobs: list[dict], app_url: str = "") -> None:
         meta = " · ".join(x for x in [j["company"], j.get("location") or "", f"posted {posted}" if posted else ""] if x)
         label, color = VISA_LABELS.get(j.get("visa") or "", ("", "#4b5563"))
         visa_line = f"{label} {j.get('note') or ''}".strip() if label else ""
-        text_lines.append(f"- {j['title']}\n  {meta}\n  {visa_line + chr(10) + '  ' if visa_line else ''}{j.get('url') or ''}")
+        ch_label, ch_fg, ch_bg = CHANNEL_LABELS.get(j.get("channel") or "", ("", "", ""))
+        text_lines.append(f"- {'[' + ch_label + '] ' if ch_label else ''}{j['title']}\n  {meta}\n  "
+                          f"{visa_line + chr(10) + '  ' if visa_line else ''}{j.get('url') or ''}")
         visa_html = (f'<div style="margin-top:4px;font-size:13px;color:{color}"><strong>{escape(label)}</strong> '
                      f'<span style="color:#6b7280">{escape(j.get("note") or "")}</span></div>') if label else ""
+        badge = (f'<span style="display:inline-block;font-size:11px;font-weight:700;color:{ch_fg};background:{ch_bg};'
+                 f'padding:2px 8px;border-radius:99px;margin-bottom:6px;text-transform:uppercase;letter-spacing:.04em">'
+                 f'{escape(ch_label)}</span><br>') if ch_label else ""
         rows.append(
             f"""<tr><td style="padding:14px 16px;border-bottom:1px solid #e5e7eb">
-              <a href="{escape(j.get('url') or '#', quote=True)}"
+              {badge}<a href="{escape(j.get('url') or '#', quote=True)}"
                  style="font-size:16px;font-weight:600;color:#1d4ed8;text-decoration:none">{escape(j['title'])}</a>
               <div style="margin-top:4px;color:#4b5563;font-size:14px">{escape(meta)}</div>
               {visa_html}

@@ -46,7 +46,42 @@ DEFAULT_SETTINGS = {
 LINKEDIN_ENTRY_LEVELS = "2,3"
 
 # Bump when presets change; existing databases are migrated once (see db._migrate_presets).
-PRESET_VERSION = 2
+PRESET_VERSION = 3
+
+# Big tech and well-known tech companies you asked to watch (added as "Your companies", label
+# "Watchlist"). Each entry: (name, kind, config, check interval in minutes). The Greenhouse /
+# Lever / Ashby boards were verified to exist; edit or delete any of them in the dashboard.
+_GH, _LV, _AB = "greenhouse", "lever", "ashby"
+WATCHLIST = [
+    # Own career sites (dedicated connectors)
+    ("Amazon", "amazon", {}, 2),
+    ("Apple", "apple", {}, 2),
+    ("Google", "google", {}, 2),
+    ("Microsoft", "microsoft", {}, 2),
+    ("Netflix", "eightfold", {"host": "explore.jobs.netflix.net", "domain": "netflix.com", "company": "Netflix"}, 2),
+    # Workday
+    ("NVIDIA", "workday", {"host": "nvidia.wd5.myworkdayjobs.com", "tenant": "nvidia", "site": "NVIDIAExternalCareerSite"}, 2),
+    ("Salesforce", "workday", {"host": "salesforce.wd12.myworkdayjobs.com", "tenant": "salesforce",
+                               "site": "External_Career_Site"}, 2),
+    ("Adobe", "workday", {"host": "adobe.wd5.myworkdayjobs.com", "tenant": "adobe", "site": "external_experienced"}, 2),
+    # Career sites with no usable feed: LinkedIn search limited to these companies (past hour)
+    ("LinkedIn: Meta, Uber, Cisco, Oracle, IBM, Tesla", "linkedin",
+     {"keywords": "engineer", "location": "United States", "experience": LINKEDIN_ENTRY_LEVELS,
+      "company_ids": "10667,1815218,1063,1028,1009,15564"}, 10),
+    # Greenhouse / Lever / Ashby
+    *[(n, _GH, {"board": b}, 1) for n, b in [
+        ("Stripe", "stripe"), ("Airbnb", "airbnb"), ("Databricks", "databricks"), ("Pinterest", "pinterest"),
+        ("Lyft", "lyft"), ("Coinbase", "coinbase"), ("Robinhood", "robinhood"), ("Dropbox", "dropbox"),
+        ("Reddit", "reddit"), ("Figma", "figma"), ("Instacart", "instacart"), ("Roblox", "roblox"),
+        ("Discord", "discord"), ("Cloudflare", "cloudflare"), ("Twilio", "twilio"), ("Datadog", "datadog"),
+        ("MongoDB", "mongodb"), ("Anthropic", "anthropic"), ("Scale AI", "scaleai"), ("Brex", "brex"),
+        ("Asana", "asana"), ("Okta", "okta"), ("Elastic", "elastic"), ("GitLab", "gitlab"), ("Samsara", "samsara"),
+        ("Affirm", "affirm"), ("Chime", "chime"), ("Duolingo", "duolingo")]],
+    *[(n, _LV, {"company": b, "region": "global"}, 1) for n, b in [("Palantir", "palantir"), ("Spotify", "spotify")]],
+    *[(n, _AB, {"board": b}, 1) for n, b in [
+        ("OpenAI", "openai"), ("Notion", "notion"), ("Ramp", "ramp"), ("Plaid", "plaid"), ("Snowflake", "snowflake"),
+        ("Perplexity", "perplexity")]],
+]
 
 # Discovery feeds created automatically on first start.
 PRESET_SOURCES = [

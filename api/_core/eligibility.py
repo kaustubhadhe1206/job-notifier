@@ -105,6 +105,10 @@ CLEARANCE = [re.compile(p, re.I) for p in [
     r"\bpolygraph\b",
     r"\bpublic trust (?:clearance|position|background|investigation|eligib\w*|determination)\b",
     r"\b(?:able|ability|eligible|eligibility) to (?:obtain|receive|hold|maintain) (?:an? )?(?:\w+ )?clearance\b",
+    # Government-contract vetting, which in practice is limited to US citizens
+    r"\b(?:federal|government) (?:background )?(?:investigation|suitability)\b",
+    r"\bfederal background (?:check|screening)s?\b",
+    r"\bsuitability determination\b",
 ]]
 CITIZENSHIP = [re.compile(p, re.I) for p in [
     rf"\b(?:must|shall|required to|need to|needs to|have to|has to) (?:be|hold|have|possess|maintain) (?:an? )?{US} (?:citizen\w*|nationals?|persons?)\b",
@@ -161,8 +165,12 @@ YOE_PATTERNS = [
     # "3+ years of professional software experience", "2-4 yrs experience", "five years' experience"
     re.compile(rf"\b{_RANGE}(?:years?|yrs?)'?\.?(?:\s+(?:of|in|with|as|at|on|building|working|doing|writing))?"
                rf"(?:\s+[\w/&,+.-]+){{0,6}}?\s+(?:experience|exp)\b", re.I),
-    # "minimum of 3 years ... experience" is covered above; "experience: 3+ years", "experience of 5 years"
+    # "experience: 3+ years", "experience of 5 years"
     re.compile(rf"\bexperience\b(?:\s*(?::|of|-|–|—|\())?\s*(?:at least |minimum of |a minimum of )?{_RANGE}(?:years?|yrs?)\b", re.I),
+    # Without the word "experience": "4+ years developing NLP systems", "at least 3 years", "3-5 years"
+    re.compile(rf"\b{_NUM}\s*(?:\+|plus)\s*(?:years?|yrs?)\b", re.I),
+    re.compile(rf"\b(?:at least|a minimum of|minimum of|minimum|min\.)\s+{_NUM}\s*\+?\s*(?:years?|yrs?)\b", re.I),
+    re.compile(rf"\b{_NUM}\s*(?:-|–|—|to)\s*{_NUM}\s*\+?\s*(?:years?|yrs?)\b", re.I),
 ]
 YOE_IGNORE = re.compile(r"prefer|nice[\s-]to[\s-]have|bonus|ideally|a plus|is a plus|desired|desirable|optional|"
                         r"not required|we have|we've|our team has|our founders|company has|over the (?:past|last)", re.I)
@@ -173,6 +181,19 @@ def _num(s: str | None) -> int | None:
         return None
     s = s.lower()
     return int(s) if s.isdigit() else _NUMBER_WORDS.get(s)
+
+
+# Section headings: years listed under "Preferred qualifications" / "Nice to have" aren't required.
+_PREFERRED_HEADING = re.compile(r"preferred qualifications|preferred skills|preferred experience|nice[\s-]to[\s-]haves?|"
+                                r"bonus points|pluses|bonus if|what would make you stand out|ideal candidate", re.I)
+_REQUIRED_HEADING = re.compile(r"(?:minimum|basic|required|must[\s-]have) (?:qualifications|requirements|skills)|"
+                               r"\brequirements\b|what you(?:'|’)ll need|what you bring|you have\b|who you are", re.I)
+
+
+def _in_preferred_section(text: str, pos: int) -> bool:
+    last_pref = max((m.start() for m in _PREFERRED_HEADING.finditer(text, 0, pos)), default=-1)
+    last_req = max((m.start() for m in _REQUIRED_HEADING.finditer(text, 0, pos)), default=-1)
+    return last_pref > last_req
 
 
 def required_years(text: str, loose: bool = False) -> tuple[int, re.Match] | None:
@@ -187,8 +208,11 @@ def required_years(text: str, loose: bool = False) -> tuple[int, re.Match] | Non
             low = _num(m.group(1))
             if low is None or low > 12:  # "20 years of experience" is usually about the company
                 continue
-            context = text[max(0, m.start() - 80):m.end() + 40]
-            if YOE_IGNORE.search(context):
+            # Look 80 chars back, but forward only to the end of this sentence: the next line may be a
+            # "Preferred qualifications" heading that has nothing to do with this requirement.
+            end = _SENTENCE_END.search(text, m.end())
+            context = text[max(0, m.start() - 80):min(end.start() if end else len(text), m.end() + 40)]
+            if YOE_IGNORE.search(context) or _in_preferred_section(text, m.start()):
                 continue
             found.append((low, m))
     if not found:
@@ -199,6 +223,18 @@ def required_years(text: str, loose: bool = False) -> tuple[int, re.Match] | Non
 def _quote(text: str, m: re.Match) -> str:
     a, b = max(0, m.start() - 50), min(len(text), m.end() + 50)
     return ("…" if a else "") + text[a:b].strip() + ("…" if b < len(text) else "")
+
+
+# Sentence boundary: . ! ? followed by a capital letter, not "U.S." / "e.g." style abbreviations.
+_SENTENCE_END = re.compile(r"(?<![A-Z.])(?<!\b[a-z])[.!?](?=\s+[A-Z0-9(\"“•\-])|\n")
+
+
+def _sentence(text: str, m: re.Match) -> str:
+    start = 0
+    for b in _SENTENCE_END.finditer(text, 0, m.start()):
+        start = b.end()
+    end_m = _SENTENCE_END.search(text, m.end())
+    return text[start:end_m.end() if end_m else len(text)]
 
 
 def _find(patterns, text: str, eeo_guard: bool = False):
@@ -214,7 +250,9 @@ def _find(patterns, text: str, eeo_guard: bool = False):
             sentence_end = re.search(r"[.?!]", after)
             if sentence_end and sentence_end.group() == "?" and rx in NO_SPONSORSHIP:
                 continue
-            if eeo_guard and EEO_CONTEXT.search(text[max(0, m.start() - 150):m.end() + 150]):
+            # EEO boilerplate ("without regard to ... citizenship status") only counts if it's the
+            # same sentence; a nearby "equal opportunity employer" line must not cancel a real requirement.
+            if eeo_guard and EEO_CONTEXT.search(_sentence(text, m)):
                 continue
             return m
     return None

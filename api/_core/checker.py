@@ -38,6 +38,25 @@ def fetch_source(source: dict) -> FetchResult:
         return FetchResult(error=fetchers.describe_error(e))
 
 
+CHANNEL_RANK = {"hidden_new": 0, "hidden": 1, "watchlist": 2, "jobboard": 3, "linkedin": 4}
+
+
+def _channel(source: dict) -> str:
+    """Where a job was found (shown as a label in emails, the dashboard and the sheet).
+    hidden      a discovered company's own career page (usually before LinkedIn has it)
+    hidden_new  same, and that company had no US engineering openings until now
+    watchlist   a company you added yourself
+    linkedin    LinkedIn search
+    jobboard    Hacker News, YC, RemoteOK, We Work Remotely, Himalayas"""
+    if source["origin"] == "manual" and (source["kind"] != "linkedin" or (source.get("config") or {}).get("company_ids")):
+        return "watchlist"  # your companies, including a LinkedIn search limited to companies you picked
+    if source["kind"] == "linkedin":
+        return "linkedin"
+    if source["origin"] == "auto":
+        return "hidden_new" if source.get("initialized") and source.get("relevant_count") == 0 else "hidden"
+    return "jobboard"
+
+
 def _recently_checked(source: dict) -> bool:
     """True if the previous successful check was recent, so anything new appeared since then.
     After a long gap (paused source, stalled cron) new jobs could be hours old."""
@@ -143,6 +162,7 @@ def run_check(trigger: str = "cron", force: bool = False, source_ids: list[int] 
 
             # Only jobs that fit your filters (role, level, company, US) are stored: with thousands
             # of companies watched, storing every posting would fill the free database.
+            channel = _channel(source)
             reasons, rows = {}, []
             for j in res.jobs:
                 if filters.static_reason(j) is not None:
@@ -158,6 +178,7 @@ def run_check(trigger: str = "cron", force: bool = False, source_ids: list[int] 
                     "baseline": baseline,
                     "matched": False,  # decided below, after reading the description
                     "note": reasons[j.external_id],
+                    "channel": channel,
                 })
             inserted = db.insert_jobs(conn, source["id"], rows)
 
@@ -227,9 +248,9 @@ def run_check(trigger: str = "cron", force: bool = False, source_ids: list[int] 
             if pending:
                 # The same opening often shows up on LinkedIn and on the company board: send it once.
                 unique = _dedupe(pending)
-                # Confirmed sponsors first, then jobs that just don't mention sponsorship.
+                # Hidden jobs first, then by sponsorship evidence.
                 rank = {"stated": 0, "listed": 1, "history": 2}
-                unique.sort(key=lambda j: rank.get(j.get("visa"), 3))
+                unique.sort(key=lambda j: (CHANNEL_RANK.get(j.get("channel"), 5), rank.get(j.get("visa"), 3)))
                 try:
                     notifier.send_jobs_email(notifier.recipient(settings), unique, os.environ.get("APP_URL", ""))
                     summary["emailed"] = len(unique)

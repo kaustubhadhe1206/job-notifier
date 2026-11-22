@@ -20,6 +20,15 @@ SPONSORSHIP_TEXT = {
 }
 
 
+CHANNEL_TEXT = {
+    "hidden_new": "Hidden (first opening)",
+    "hidden": "Hidden",
+    "watchlist": "Watchlist",
+    "linkedin": "LinkedIn",
+    "jobboard": "Job board",
+}
+
+
 def configured() -> bool:
     return bool(os.environ.get("SHEETS_WEBHOOK_URL") and os.environ.get("SHEETS_SECRET"))
 
@@ -63,7 +72,8 @@ def append_jobs(jobs: list[dict]) -> dict:
         "url": j.get("url") or "",
         "sponsorship": SPONSORSHIP_TEXT.get(j.get("visa") or "", ""),
         "details": j.get("note") or "",
-        "source": j.get("source_name") or "",
+        # "Hidden · Ashby" etc. (kept in the Source column so existing sheets need no script update)
+        "source": " · ".join(x for x in [CHANNEL_TEXT.get(j.get("channel") or "", ""), j.get("source_name") or ""] if x),
         "posted_at": _iso(j.get("posted_at")),
     } for j in jobs]
     return _call({"action": "append", "jobs": rows})

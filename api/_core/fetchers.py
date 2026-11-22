@@ -12,6 +12,7 @@ Every fetcher has the signature fetcher(client, config, ctx) -> list[Job].
 from __future__ import annotations
 
 import html
+import json
 import re
 import threading
 import xml.etree.ElementTree as ET
@@ -122,7 +123,12 @@ def _dt(value) -> datetime | None:
         if re.fullmatch(r"\d{4}-\d{2}-\d{2}", s):
             y, m, d = map(int, s.split("-"))
             return DateOnly(y, m, d, tzinfo=timezone.utc)
+        m = re.fullmatch(r"([A-Z][a-z]+) (\d{1,2}), (\d{4})", s)  # "November 22, 2026"
+        if m:
+            d = datetime.strptime(s, "%B %d, %Y")
+            return DateOnly(d.year, d.month, d.day, tzinfo=timezone.utc)
         s = s.replace("Z", "+00:00")
+        s = re.sub(r"(\.\d{6})\d+", r"\1", s)  # nanoseconds -> microseconds
         if s.endswith(" UTC"):
             s = s[:-4]
         d = datetime.fromisoformat(s)
@@ -282,6 +288,114 @@ def fetch_workday(c, cfg, ctx):
     return jobs
 
 
+# ================================================================ big tech career sites
+# These companies run their own careers sites. Each connector reads the same data the site shows,
+# newest first, so a new posting is seen on the next check.
+
+BIG_TECH_QUERY = "engineer"  # broad on purpose; your title filters narrow it down
+
+
+def _unverified(ts) -> datetime | None:
+    try:
+        return Unverified.fromtimestamp(float(ts), tz=timezone.utc) if ts else None
+    except (TypeError, ValueError, OverflowError, OSError):
+        return None
+
+
+def fetch_amazon(c, cfg, ctx):
+    data = _get(c, "https://www.amazon.jobs/en/search.json",
+                params={"base_query": cfg.get("query", BIG_TECH_QUERY), "country[]": "USA", "sort": "recent",
+                        "result_limit": 100}).json()
+    jobs = []
+    for j in data.get("jobs", []):
+        desc = (f"{j.get('description') or ''} Basic qualifications: {j.get('basic_qualifications') or ''} "
+                f"Preferred qualifications: {j.get('preferred_qualifications') or ''}")
+        jobs.append(Job(str(j.get("id_icims") or j.get("id")), j.get("title") or "",
+                        "https://www.amazon.jobs" + (j.get("job_path") or ""),
+                        j.get("normalized_location") or _join(j.get("city"), j.get("state"), j.get("country_code")),
+                        j.get("company_name") or "Amazon", _dt(j.get("posted_date")), description=desc))
+    return jobs
+
+
+def fetch_apple(c, cfg, ctx):
+    token = c.get("https://jobs.apple.com/api/v1/CSRFToken").headers.get("x-apple-csrf-token") or ""
+    jobs = []
+    for page in (1, 2, 3):
+        r = c.post("https://jobs.apple.com/api/v1/search",
+                   json={"query": cfg.get("query", BIG_TECH_QUERY), "filters": {"locations": ["postLocation-USA"]},
+                         "page": page, "locale": "en-us", "sort": "newest",
+                         "format": {"longDate": "MMMM D, YYYY", "mediumDate": "MMM D, YYYY"}},
+                   headers={"x-apple-csrf-token": token, "Content-Type": "application/json",
+                            "Origin": "https://jobs.apple.com", "Accept": "application/json"})
+        r.raise_for_status()
+        results = (r.json().get("res") or {}).get("searchResults") or []
+        for x in results:
+            locs = [l.get("name") or _join(l.get("city"), l.get("stateProvince"), l.get("countryName"))
+                    for l in x.get("locations") or [] if isinstance(l, dict)]
+            jobs.append(Job(str(x.get("id")), x.get("postingTitle") or "",
+                            f"https://jobs.apple.com/en-us/details/{x.get('positionId')}/{x.get('transformedPostingTitle') or ''}",
+                            "; ".join(l for l in locs if l) or "United States", "Apple", _dt(x.get("postDateInGMT")),
+                            description=x.get("jobSummary") or ""))
+        if len(results) < 20:
+            break
+    return jobs
+
+
+def fetch_google(c, cfg, ctx):
+    jobs = []
+    for page in (1, 2):
+        html_text = _get(c, "https://www.google.com/about/careers/applications/jobs/results",
+                         params={"q": cfg.get("query", BIG_TECH_QUERY), "location": "United States",
+                                 "sort_by": "date", "page": page}, headers={"Accept": "text/html"}).text
+        m = re.search(r"AF_initDataCallback\(\{key: 'ds:1'.*?data:(\[.*?\]), sideChannel", html_text, re.S)
+        if not m:
+            raise FetchError("Google careers page layout changed")
+        rows = (json.loads(m.group(1)) or [[]])[0] or []
+        for j in rows:
+            if not isinstance(j, list) or len(j) < 13:
+                continue
+            desc = " ".join(x[1] for x in (j[3], j[4], j[19] if len(j) > 19 else None)
+                            if isinstance(x, list) and len(x) > 1 and x[1])
+            locs = "; ".join(l[0] for l in (j[9] or []) if isinstance(l, list) and l and l[0])
+            ts = j[12][0] if isinstance(j[12], list) and j[12] else None
+            jobs.append(Job(str(j[0]), j[1] or "", f"https://www.google.com/about/careers/applications/jobs/results/{j[0]}",
+                            locs, "Google", _unverified(ts), description=desc))
+        if len(rows) < 20:
+            break
+    return jobs
+
+
+def fetch_microsoft(c, cfg, ctx):
+    jobs = []
+    for start in (0, 10, 20, 30):
+        data = _get(c, "https://apply.careers.microsoft.com/api/pcsx/search",
+                    params={"domain": "microsoft.com", "query": cfg.get("query", BIG_TECH_QUERY),
+                            "location": "United States", "start": start, "sort_by": "timestamp"}).json().get("data") or {}
+        positions = data.get("positions") or []
+        for p in positions:
+            jobs.append(Job(str(p["id"]), p.get("name") or "",
+                            "https://apply.careers.microsoft.com" + (p.get("positionUrl") or f"/careers/job/{p['id']}"),
+                            "; ".join(p.get("locations") or []), "Microsoft", _dt(p.get("postedTs"))))
+        if len(positions) < 10:
+            break
+    return jobs
+
+
+def fetch_eightfold(c, cfg, ctx):
+    """Eightfold-hosted career sites (e.g. Netflix: explore.jobs.netflix.net)."""
+    host = cfg["host"]
+    data = _get(c, f"https://{host}/api/apply/v2/jobs",
+                params={"domain": cfg["domain"], "start": 0, "num": 50, "query": cfg.get("query", BIG_TECH_QUERY),
+                        "location": "United States", "sort_by": "timestamp"}).json()
+    jobs = []
+    for p in data.get("positions") or []:
+        jobs.append(Job(str(p["id"]), p.get("name") or "",
+                        p.get("canonicalPositionUrl") or f"https://{host}/careers/job/{p['id']}",
+                        p.get("location") or "; ".join(p.get("locations") or []), cfg.get("company") or "",
+                        _unverified(p.get("t_create")), description=p.get("job_description") or ""))
+    return jobs
+
+
 # ================================================================ discovery feeds
 
 
@@ -403,6 +517,8 @@ def fetch_linkedin(c, cfg, ctx):
             params["f_WT"] = "2"
         if cfg.get("experience"):
             params["f_E"] = cfg["experience"]  # LinkedIn experience levels, e.g. "2,3" = entry level + associate
+        if cfg.get("company_ids"):
+            params["f_C"] = cfg["company_ids"]  # only these companies (LinkedIn company ids, comma separated)
         r = c.get("https://www.linkedin.com/jobs-guest/jobs/api/seeMoreJobPostings/search", params=params,
                   headers={"Accept": "text/html", "Accept-Language": "en-US,en;q=0.9"})
         if r.status_code == 429:
@@ -510,6 +626,11 @@ FETCHERS = {
     "smartrecruiters": fetch_smartrecruiters,
     "recruitee": fetch_recruitee,
     "workday": fetch_workday,
+    "amazon": fetch_amazon,
+    "apple": fetch_apple,
+    "google": fetch_google,
+    "microsoft": fetch_microsoft,
+    "eightfold": fetch_eightfold,
     "hn_hiring": fetch_hn_hiring,
     "hn_jobs": fetch_hn_jobs,
     "remoteok": fetch_remoteok,
@@ -519,7 +640,8 @@ FETCHERS = {
     "generic": fetch_generic,
 }
 
-BOARD_KINDS = {"greenhouse", "lever", "ashby", "workable", "smartrecruiters", "recruitee", "workday"}
+BIG_TECH_KINDS = {"amazon", "apple", "google", "microsoft", "eightfold"}
+BOARD_KINDS = {"greenhouse", "lever", "ashby", "workable", "smartrecruiters", "recruitee", "workday"} | BIG_TECH_KINDS
 FEED_KINDS = set(FETCHERS) - BOARD_KINDS  # feeds are scanned for links to new company boards
 # Sources that list a company's own openings: a job that newly appears between two checks was
 # just posted, even when the site gives no exact posting time.
@@ -533,6 +655,7 @@ REQUIRED_CONFIG = {
     "smartrecruiters": ["company"],
     "recruitee": ["subdomain"],
     "workday": ["host", "tenant", "site"],
+    "eightfold": ["host", "domain"],
     "generic": ["url"],
 }
 
@@ -547,6 +670,8 @@ def board_key(kind: str, cfg: dict) -> str | None:
         "smartrecruiters": cfg.get("company"),
         "recruitee": cfg.get("subdomain"),
         "workday": f"{cfg.get('host')}/{cfg.get('site')}",
+        "amazon": "amazon", "apple": "apple", "google": "google", "microsoft": "microsoft",
+        "eightfold": cfg.get("host"),
     }.get(kind)
     return f"{kind}:{value.lower()}" if value else None
 
@@ -561,6 +686,11 @@ def public_url(kind: str, cfg: dict) -> str:
         "smartrecruiters": lambda: f"https://jobs.smartrecruiters.com/{cfg['company']}",
         "recruitee": lambda: f"https://{cfg['subdomain']}.recruitee.com/",
         "workday": lambda: f"https://{cfg['host']}/{cfg['site']}",
+        "amazon": lambda: "https://www.amazon.jobs/en/search?base_query=software+engineer&country%5B%5D=USA&sort=recent",
+        "apple": lambda: "https://jobs.apple.com/en-us/search?location=united-states-USA&sort=newest",
+        "google": lambda: "https://www.google.com/about/careers/applications/jobs/results?location=United%20States&sort_by=date",
+        "microsoft": lambda: "https://apply.careers.microsoft.com/careers?location=United%20States&sort_by=timestamp",
+        "eightfold": lambda: f"https://{cfg['host']}/careers",
         "hn_hiring": lambda: "https://news.ycombinator.com/submitted?id=whoishiring",
         "hn_jobs": lambda: "https://news.ycombinator.com/jobs",
         "remoteok": lambda: "https://remoteok.com/remote-dev-jobs",
