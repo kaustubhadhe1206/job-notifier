@@ -147,18 +147,23 @@ def _slugs(name: str) -> list[str]:
     return list(dict.fromkeys(["".join(words), "-".join(words)])) if words else []
 
 
-def discover(name: str) -> list[dict]:
+ALL_PLATFORMS = ("greenhouse", "lever", "ashby", "workable", "smartrecruiters", "recruitee")
+# For bulk lookups skip Recruitee: every company is its own subdomain there, so each probe costs a
+# fresh TLS handshake (most of the CPU of a lookup), and it's mostly used by European companies.
+BULK_PLATFORMS = ("greenhouse", "lever", "ashby", "workable", "smartrecruiters")
+
+
+def discover(name: str, platforms: tuple[str, ...] = ALL_PLATFORMS) -> list[dict]:
     """Probe the public ATS APIs for a company by name. Returns boards that have jobs."""
-    candidates = []
-    for slug in _slugs(name):
-        candidates += [
-            ("greenhouse", {"board": slug}),
-            ("lever", {"company": slug, "region": "global"}),
-            ("ashby", {"board": slug}),
-            ("workable", {"account": slug}),
-            ("smartrecruiters", {"company": slug}),
-            ("recruitee", {"subdomain": slug}),
-        ]
+    configs = {
+        "greenhouse": lambda s: {"board": s},
+        "lever": lambda s: {"company": s, "region": "global"},
+        "ashby": lambda s: {"board": s},
+        "workable": lambda s: {"account": s},
+        "smartrecruiters": lambda s: {"company": s},
+        "recruitee": lambda s: {"subdomain": s},
+    }
+    candidates = [(kind, configs[kind](slug)) for slug in _slugs(name) for kind in platforms]
     with ThreadPoolExecutor(max_workers=12) as pool:
         attempts = list(pool.map(lambda kc: (kc[0], kc[1], *_try(kc[0], kc[1])), candidates))
     hits, seen = [], set()

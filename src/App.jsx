@@ -158,8 +158,12 @@ function Dashboard({ onLogout }) {
         <section className="stats">
           <Stat label="Matches · 24h" value={stats.matched_24h} />
           <Stat label="Emailed · 24h" value={stats.emailed_24h} />
-          <Stat label="Companies watched" value={stats.auto_active + sources.filter((s) => s.origin === "manual").length} />
-          <Stat label="Discovered · 24h" value={stats.auto_24h} />
+          <Stat
+            label="Career pages watched"
+            value={(stats.auto_active + stats.manual_sources).toLocaleString()}
+            hint={`${stats.auto_hiring.toLocaleString()} hiring US engineers now`}
+          />
+          <Stat label="Discovered · 24h" value={stats.auto_24h.toLocaleString()} hint={`${stats.queue_waiting} names waiting for lookup`} />
           <Stat
             label="Skipped · 24h"
             value={stats.blocked_24h + stats.unverified_24h}
@@ -175,7 +179,7 @@ function Dashboard({ onLogout }) {
         <nav className="tabs" role="tablist">
           {[
             ["jobs", "Jobs"],
-            ["sources", `Sources (${sources.length})`],
+            ["sources", "Sources"],
             ["settings", "Settings"],
           ].map(([id, label]) => (
             <button key={id} role="tab" aria-selected={tab === id} className={tab === id ? "tab active" : "tab"} onClick={() => setTab(id)}>
@@ -191,7 +195,7 @@ function Dashboard({ onLogout }) {
         </nav>
 
         {tab === "jobs" && <JobsTab refreshKey={lastRun?.id} />}
-        {tab === "sources" && <SourcesTab sources={sources} reload={load} notify={notify} />}
+        {tab === "sources" && <SourcesTab sources={sources} stats={stats} seed={data.seed} reload={load} notify={notify} />}
         {tab === "settings" && <SettingsTab settings={data.settings} setup={setup} reload={load} notify={notify} />}
       </main>
 
@@ -351,18 +355,18 @@ function H1bLine({ record }) {
 
 /* ------------------------------------------------------------------ sources */
 
-function SourcesTab({ sources, reload, notify }) {
+function SourcesTab({ sources, stats, seed, reload, notify }) {
   const groups = useMemo(
     () => ({
       manual: sources.filter((s) => s.origin === "manual"),
       preset: sources.filter((s) => s.origin === "preset"),
-      auto: sources.filter((s) => s.origin === "auto"),
     }),
     [sources]
   );
 
   return (
     <>
+      <DiscoveryStatus stats={stats} seed={seed} />
       <AddSource reload={reload} notify={notify} />
       <SourceGroup
         title="Your companies"
@@ -374,22 +378,87 @@ function SourcesTab({ sources, reload, notify }) {
       />
       <SourceGroup
         title="Discovery feeds"
-        subtitle="Job streams full of startups and smaller companies. Links to company job boards found here are added below automatically."
+        subtitle="LinkedIn and job streams. Every company seen hiring engineers here gets its own career page looked up and watched directly."
         rows={groups.preset}
         reload={reload}
         notify={notify}
       />
-      <SourceGroup
-        title="Auto-discovered companies"
-        subtitle="Found through the feeds and watched directly on their own job boards. They're checked in rotation."
-        rows={groups.auto}
-        empty="Nothing discovered yet. This fills up after the first few checks."
-        searchable
-        collapsedLimit={25}
-        reload={reload}
-        notify={notify}
-      />
+      <AutoSources reload={reload} notify={notify} />
     </>
+  );
+}
+
+const SEED_HOSTS = ["Greenhouse", "Greenhouse", "Ashby", "Lever", "Workable", "SmartRecruiters"];
+
+function DiscoveryStatus({ stats, seed }) {
+  let seedText = "Starting soon";
+  if (seed?.done_at) seedText = `Done (${(seed.added || 0).toLocaleString()} career pages added; refreshes monthly)`;
+  else if (seed?.crawl) {
+    seedText = `Reading ${SEED_HOSTS[seed.host] || "job boards"} (${seed.host + 1} of 6), page ${seed.page + 1}` +
+      (seed.pages ? ` of ${seed.pages}` : "") + ` · ${(seed.added || 0).toLocaleString()} career pages added`;
+  }
+  return (
+    <section className="card">
+      <h3>Finding companies you don't know</h3>
+      <div className="discovery-grid">
+        <div><strong>{(stats.auto_active + stats.manual_sources).toLocaleString()}</strong><span>career pages watched</span></div>
+        <div><strong>{stats.auto_hiring.toLocaleString()}</strong><span>hiring US engineers (checked every 15 min)</span></div>
+        <div><strong>{stats.auto_unchecked.toLocaleString()}</strong><span>waiting for their first check</span></div>
+        <div><strong>{stats.queue_waiting.toLocaleString()}</strong><span>names from LinkedIn/feeds to look up</span></div>
+      </div>
+      <p className="small muted">
+        Web index (Common Crawl): {seedText}
+        {seed?.last_error && <span className="error"> · last try failed ({seed.last_error}), retrying automatically</span>}
+      </p>
+    </section>
+  );
+}
+
+function AutoSources({ reload, notify }) {
+  const [q, setQ] = useState("");
+  const [data, setData] = useState({ total: 0, rows: [] });
+  const [limit, setLimit] = useState(25);
+  const [error, setError] = useState("");
+
+  const load = useCallback(async () => {
+    try {
+      setData(await api(`/api/sources/auto?q=${encodeURIComponent(q)}&limit=${limit}`));
+      setError("");
+    } catch (err) {
+      setError(err.message);
+    }
+  }, [q, limit]);
+
+  useEffect(() => {
+    const t = setTimeout(load, 250);
+    return () => clearTimeout(t);
+  }, [load]);
+
+  const reloadAll = () => (load(), reload());
+
+  return (
+    <section className="card flush">
+      <div className="card-head">
+        <div>
+          <h3>Auto-discovered companies <span className="count">{data.total.toLocaleString()}</span></h3>
+          <p className="muted small">
+            Watched directly on their own career pages. Companies with US engineering openings are listed first and
+            checked every 15 minutes; the rest every few hours.
+          </p>
+        </div>
+        <input className="search" placeholder="Search companies…" value={q} onChange={(e) => (setQ(e.target.value), setLimit(25))} />
+      </div>
+      {error && <p className="pad error">{error}</p>}
+      {!error && data.total === 0 && <p className="pad muted">{q ? "No matches." : "Nothing discovered yet. This fills up after the first few checks."}</p>}
+      <ul className="source-list">
+        {data.rows.map((s) => <SourceRow key={s.id} s={s} reload={reloadAll} notify={notify} />)}
+      </ul>
+      {data.rows.length < data.total && (
+        <button className="link-btn pad" onClick={() => setLimit((l) => l + 50)}>
+          Show more ({(data.total - data.rows.length).toLocaleString()} more)
+        </button>
+      )}
+    </section>
   );
 }
 
@@ -580,12 +649,13 @@ function SourceRow({ s, reload, notify }) {
           <div className="muted small">
             {s.enabled ? `checked ${timeAgo(s.last_checked_at)}` : "paused"}
             {s.last_job_count != null && ` · ${s.last_job_count} open`}
+            {s.origin === "auto" && s.relevant_count != null && ` · ${s.relevant_count} US engineering`}
             {` · ${s.match_count} matches`}
           </div>
           {s.last_error && <div className="error small">{s.last_error}</div>}
         </div>
         <select value={s.interval_minutes} onChange={(e) => setInterval_(e.target.value)} disabled={busy} aria-label="Check interval">
-          {[...new Set([1, 2, 5, 10, 15, 30, 60, 180, s.interval_minutes])].sort((a, b) => a - b).map((m) => (
+          {[...new Set([1, 2, 5, 10, 15, 30, 60, 180, 360, s.interval_minutes])].sort((a, b) => a - b).map((m) => (
             <option key={m} value={m}>every {m < 60 ? `${m}m` : `${m / 60}h`}</option>
           ))}
         </select>
@@ -690,6 +760,7 @@ function SettingsTab({ settings, setup, reload, notify }) {
           max_years_experience: Number(form.max_years_experience) || 0,
           max_age_minutes: Number(form.max_age_minutes) || 60,
           auto_interval_minutes: Number(form.auto_interval_minutes) || 15,
+          auto_idle_interval_minutes: Number(form.auto_idle_interval_minutes) || 360,
         },
       });
       notify("Settings saved. New filters apply to jobs found from now on.");
@@ -796,11 +867,17 @@ function SettingsTab({ settings, setup, reload, notify }) {
         </label>
 
         <h3>Discovery</h3>
-        <label className="check-field"><input type="checkbox" checked={form.auto_discover} onChange={set("auto_discover")} /> Automatically watch company job boards found in the feeds</label>
-        <label className="field narrow-field">
-          <span>Check each discovered company every (minutes)</span>
-          <input type="number" min="5" max="1440" value={form.auto_interval_minutes} onChange={set("auto_interval_minutes")} />
-        </label>
+        <label className="check-field"><input type="checkbox" checked={form.auto_discover} onChange={set("auto_discover")} /> Automatically find and watch company career pages (from LinkedIn, the feeds and the Common Crawl web index)</label>
+        <div className="grid-3">
+          <label className="field">
+            <span>Companies hiring US engineers: check every (minutes)</span>
+            <input type="number" min="5" max="1440" value={form.auto_interval_minutes} onChange={set("auto_interval_minutes")} />
+          </label>
+          <label className="field">
+            <span>Other companies: check every (minutes)</span>
+            <input type="number" min="30" max="10080" value={form.auto_idle_interval_minutes} onChange={set("auto_idle_interval_minutes")} />
+          </label>
+        </div>
 
         <div className="row">
           <button className="btn primary" disabled={saving}>{saving ? "Saving…" : "Save settings"}</button>

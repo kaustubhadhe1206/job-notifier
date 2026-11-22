@@ -113,8 +113,21 @@ class Filters:
             return f"Posted {when} ago (older than {int(self.max_age.total_seconds() // 60)} min)"
         return None
 
+    def hires_engineers(self, job: Job) -> bool:
+        """A Software/AI Engineer role in the US at any level: tells us the company is worth
+        checking often, because its next entry-level opening could come any minute."""
+        if self.include and not self.include.search(job.title):
+            return False
+        if self.companies and job.company and self.companies.search(job.company):
+            return False
+        return self._location_ok(job)
+
     def reason(self, job: Job, baseline: bool = False, observed: bool = False) -> str | None:
         """Why this job is filtered out, or None if it passes the title/location/freshness filters."""
+        return self.static_reason(job) or self._freshness(job, observed=observed and not baseline)
+
+    def static_reason(self, job: Job) -> str | None:
+        """All filters except freshness (role, level, company, location)."""
         if self.include and not self.include.search(job.title):
             return "Title doesn't match your roles"
         if self.seniority and not job.loose:  # multi-role HN posts are judged by their description instead
@@ -129,7 +142,7 @@ class Filters:
             return "Company is on your block list"
         if not self._location_ok(job):
             return "Not in the US"
-        return self._freshness(job, observed=observed and not baseline)
+        return None
 
     def _senior_word(self, title: str) -> str | None:
         for m in self.seniority.finditer(title):

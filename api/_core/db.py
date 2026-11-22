@@ -37,6 +37,17 @@ CREATE TABLE IF NOT EXISTS sources (
     created_at       TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 CREATE INDEX IF NOT EXISTS sources_due_idx ON sources (last_checked_at) WHERE enabled;
+-- how many US Software/AI Engineer openings the board had at the last check (drives check frequency)
+ALTER TABLE sources ADD COLUMN IF NOT EXISTS relevant_count INT;
+-- companies seen hiring engineers on LinkedIn / feeds, waiting to have their career page looked up
+CREATE TABLE IF NOT EXISTS company_queue (
+    key        TEXT PRIMARY KEY,
+    name       TEXT NOT NULL,
+    status     TEXT NOT NULL DEFAULT 'new',   -- new | checking | found | none
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    checked_at TIMESTAMPTZ
+);
+CREATE INDEX IF NOT EXISTS company_queue_new_idx ON company_queue (created_at) WHERE status = 'new';
 CREATE TABLE IF NOT EXISTS jobs (
     id            BIGSERIAL PRIMARY KEY,
     source_id     INT NOT NULL REFERENCES sources(id) ON DELETE CASCADE,
@@ -83,7 +94,7 @@ CREATE TABLE IF NOT EXISTS runs (
 
 SOURCE_COLS = """s.id, s.name, s.kind, s.config, s.url, s.origin, s.board_key, s.enabled, s.interval_minutes,
     s.initialized, s.etag, s.ids_hash, s.last_checked_at, s.last_success_at, s.last_error, s.error_count,
-    s.last_job_count, s.created_at"""
+    s.last_job_count, s.relevant_count, s.created_at"""
 
 JOB_COLS = """j.id, j.title, COALESCE(NULLIF(j.company, ''), s.name) AS company, j.location, j.url,
     j.posted_at, j.first_seen_at, j.baseline, j.matched, j.notified, j.notified_at, j.visa, j.note,
@@ -202,12 +213,29 @@ def save_settings(conn, values: dict) -> dict:
 
 
 def list_sources(conn) -> list[dict]:
+    """Your companies and the feeds. Auto-discovered companies can number in the thousands,
+    so they're listed page by page with list_auto_sources."""
     return conn.execute(
         f"""SELECT {SOURCE_COLS},
                (SELECT count(*) FROM jobs j WHERE j.source_id = s.id AND j.matched) AS match_count
-            FROM sources s
-            ORDER BY CASE s.origin WHEN 'manual' THEN 0 WHEN 'preset' THEN 1 ELSE 2 END, s.created_at DESC"""
+            FROM sources s WHERE s.origin <> 'auto'
+            ORDER BY CASE s.origin WHEN 'manual' THEN 0 ELSE 1 END, s.created_at DESC"""
     ).fetchall()
+
+
+def list_auto_sources(conn, q: str = "", limit: int = 50, offset: int = 0) -> dict:
+    where = "s.origin = 'auto'" + (" AND s.name ILIKE %(q)s" if q else "")
+    params = {"q": f"%{q}%", "limit": limit, "offset": offset}
+    rows = conn.execute(
+        f"""SELECT {SOURCE_COLS},
+               (SELECT count(*) FROM jobs j WHERE j.source_id = s.id AND j.matched) AS match_count
+            FROM sources s WHERE {where}
+            ORDER BY COALESCE(s.relevant_count, -1) DESC, s.created_at DESC
+            LIMIT %(limit)s OFFSET %(offset)s""",
+        params,
+    ).fetchall()
+    total = conn.execute(f"SELECT count(*) AS n FROM sources s WHERE {where}", params).fetchone()["n"]
+    return {"total": total, "rows": rows}
 
 
 def get_source(conn, source_id: int) -> dict | None:
@@ -266,7 +294,8 @@ def delete_source(conn, source_id: int) -> bool:
 
 def claim_due_sources(conn, *, force=False, ids=None, limit=60) -> list[dict]:
     """Atomically pick due sources and stamp last_checked_at, so overlapping runs never fetch the
-    same source twice. Your own companies and feeds go first; auto-discovered boards rotate."""
+    same source twice. Your own companies and feeds go first, then auto-discovered boards that
+    are due, then brand-new boards waiting for their first check."""
     return conn.execute(
         f"""UPDATE sources s SET last_checked_at = now()
             WHERE s.id IN (
@@ -275,7 +304,7 @@ def claim_due_sources(conn, *, force=False, ids=None, limit=60) -> list[dict]:
                   AND (%(ids)s::int[] IS NULL OR id = ANY(%(ids)s::int[]))
                   AND ((%(force)s AND origin <> 'auto') OR last_checked_at IS NULL
                        OR last_checked_at <= now() - make_interval(mins => interval_minutes) + interval '20 seconds')
-                ORDER BY (origin = 'auto'), last_checked_at NULLS FIRST
+                ORDER BY (origin = 'auto'), (origin = 'auto' AND last_checked_at IS NULL), last_checked_at NULLS FIRST
                 LIMIT %(limit)s
                 FOR UPDATE SKIP LOCKED)
             RETURNING {SOURCE_COLS}""",
@@ -283,21 +312,64 @@ def claim_due_sources(conn, *, force=False, ids=None, limit=60) -> list[dict]:
     ).fetchall()
 
 
-def source_ok(conn, source_id: int, *, job_count=None, etag=None, ids_hash=None) -> None:
+def source_ok(conn, source_id: int, *, job_count=None, etag=None, ids_hash=None, relevant_count=None,
+              interval_minutes=None) -> None:
     conn.execute(
         """UPDATE sources SET initialized = TRUE, last_success_at = now(), last_error = NULL, error_count = 0,
-               last_job_count = COALESCE(%s, last_job_count), etag = %s, ids_hash = COALESCE(%s, ids_hash)
+               last_job_count = COALESCE(%s, last_job_count), etag = %s, ids_hash = COALESCE(%s, ids_hash),
+               relevant_count = COALESCE(%s, relevant_count), interval_minutes = COALESCE(%s, interval_minutes)
            WHERE id = %s""",
-        (job_count, etag, ids_hash, source_id),
+        (job_count, etag, ids_hash, relevant_count, interval_minutes, source_id),
     )
 
 
+# ---------------------------------------------------------------- company name queue
+
+
+def enqueue_companies(conn, names: dict[str, str]) -> int:
+    """names: {normalized key: display name}. Already-seen companies are ignored."""
+    if not names:
+        return 0
+    rows = conn.execute(
+        """INSERT INTO company_queue (key, name)
+           SELECT r.key, r.name FROM jsonb_to_recordset(%s) AS r(key text, name text)
+           ON CONFLICT (key) DO NOTHING RETURNING key""",
+        (Jsonb([{"key": k, "name": v} for k, v in names.items()]),),
+    ).fetchall()
+    return len(rows)
+
+
+def claim_companies(conn, limit: int) -> list[dict]:
+    return conn.execute(
+        """UPDATE company_queue SET status = 'checking', checked_at = now()
+           WHERE key IN (SELECT key FROM company_queue
+                         WHERE status = 'new' OR (status = 'checking' AND checked_at < now() - interval '30 minutes')
+                         ORDER BY created_at LIMIT %s FOR UPDATE SKIP LOCKED)
+           RETURNING key, name""",
+        (limit,),
+    ).fetchall()
+
+
+def finish_companies(conn, results: dict[str, str]) -> None:
+    """results: {key: 'found' | 'none'}"""
+    if results:
+        conn.execute(
+            """UPDATE company_queue q SET status = r.status, checked_at = now()
+               FROM jsonb_to_recordset(%s) AS r(key text, status text) WHERE q.key = r.key""",
+            (Jsonb([{"key": k, "status": v} for k, v in results.items()]),),
+        )
+
+
 def source_error(conn, source_id: int, error: str) -> None:
+    """Auto-discovered boards are switched off after repeated errors, or right away if the very
+    first check says the board doesn't exist (common for old Common Crawl entries)."""
+    gone = "HTTP 404" in error
     conn.execute(
         """UPDATE sources SET last_error = %s, error_count = error_count + 1,
-               enabled = CASE WHEN origin = 'auto' AND error_count + 1 >= %s THEN FALSE ELSE enabled END
+               enabled = CASE WHEN origin = 'auto' AND (error_count + 1 >= %s OR (%s AND NOT initialized))
+                              THEN FALSE ELSE enabled END
            WHERE id = %s""",
-        (error[:500], AUTO_DISABLE_AFTER_ERRORS, source_id),
+        (error[:500], AUTO_DISABLE_AFTER_ERRORS, gone, source_id),
     )
 
 
@@ -422,8 +494,17 @@ def stats(conn) -> dict:
     row.update(conn.execute(
         """SELECT count(*) FILTER (WHERE origin = 'auto') AS auto_sources,
                   count(*) FILTER (WHERE origin = 'auto' AND enabled) AS auto_active,
-                  count(*) FILTER (WHERE origin = 'auto' AND created_at > now() - interval '24 hours') AS auto_24h
+                  count(*) FILTER (WHERE origin = 'auto' AND enabled AND relevant_count > 0) AS auto_hiring,
+                  count(*) FILTER (WHERE origin = 'auto' AND enabled AND NOT initialized) AS auto_unchecked,
+                  count(*) FILTER (WHERE origin = 'auto' AND created_at > now() - interval '24 hours') AS auto_24h,
+                  count(*) FILTER (WHERE origin = 'manual') AS manual_sources
            FROM sources"""
+    ).fetchone())
+    row.update(conn.execute(
+        """SELECT count(*) FILTER (WHERE status = 'new') AS queue_waiting,
+                  count(*) FILTER (WHERE status = 'found') AS queue_found,
+                  count(*) FILTER (WHERE status IN ('found', 'none')) AS queue_checked
+           FROM company_queue"""
     ).fetchone())
     row.update(conn.execute(
         """SELECT count(*) AS runs_24h, COALESCE(sum(cpu_ms), 0) AS cpu_ms_24h

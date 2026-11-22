@@ -37,7 +37,8 @@ DEFAULT_SETTINGS = {
                                   # off: ignore sponsorship entirely
     "sponsor_companies": [],      # companies you know sponsor (treated as sponsors)
     "auto_discover": True,        # add company boards found in feeds to the watch list
-    "auto_interval_minutes": 15,  # how often each auto-discovered company is checked
+    "auto_interval_minutes": 15,  # discovered companies with US engineering openings: checked this often
+    "auto_idle_interval_minutes": 360,  # discovered companies without any: checked this often
     "paused": False,
 }
 

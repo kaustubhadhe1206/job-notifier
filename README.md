@@ -9,7 +9,12 @@ Everything runs on free tiers: **Vercel** (React dashboard + Python API), **Supa
 ## How it finds jobs
 
 1. **Discovery feeds** – Hacker News "Who is hiring", Y Combinator startup job posts, RemoteOK, Himalayas, We Work Remotely, plus LinkedIn searches for "Software Engineer" and "AI Engineer" in the United States. These are full of small companies.
-2. **Auto-discovery** – when a feed post links to a company's own job board (Greenhouse, Lever, Ashby, Workable, SmartRecruiters, Recruitee, Workday), that company is added to the watch list automatically. From then on its new postings are caught on the company's own board, usually before they reach LinkedIn. The list grows by itself every day.
+2. **Auto-discovery of companies you don't know** – the app watches company career pages directly (the Greenhouse / Lever / Ashby / Workday / Workable / SmartRecruiters feed behind the page), where jobs appear first. It finds those companies three ways:
+   - **Links in job posts:** a feed post linking to a company's career page.
+   - **Company names:** every company seen hiring engineers on LinkedIn or the feeds is looked up on the hiring platforms and its career page is watched from then on (about 2 lookups per minute).
+   - **Common Crawl web index:** thousands of company career pages listed in the public Common Crawl index are added a page at a time (one step every 10 minutes, retried automatically when the index is busy, refreshed monthly).
+
+   Companies with US Software/AI Engineer openings are checked every 15 minutes; the rest every 6 hours (both editable). Only jobs matching your filters are stored, so thousands of companies fit in the free database.
 3. **Your companies** – type a company name or paste a careers URL in the dashboard. These are checked every minute.
 4. **Filters** – only jobs whose title matches your role keywords, located in the US (or remote open to the US), entry level (no Senior/Staff/Lead titles, at most 2 years of experience required) and **posted within the last 60 minutes** are considered. All of this is editable in Settings.
 5. **Work authorization (F-1 → H-1B)** – for every job that passes the filters, the full description is read before anything is emailed:
@@ -71,6 +76,8 @@ api/_core/presets.py    default filters and discovery feeds
 api/_core/db.py         Postgres schema and queries
 api/_core/notifier.py   email over SMTP
 api/_core/sheets.py     Google Sheet sync (talks to google-sheets/Code.gs)
+api/_core/discovery.py  looks up career pages for company names seen on LinkedIn / feeds
+api/_core/seeder.py     adds company career pages from the Common Crawl web index
 google-sheets/Code.gs   Apps Script you paste into your spreadsheet
 src/                    React dashboard (Vite)
 vercel.json             build, API routing, daily backup cron

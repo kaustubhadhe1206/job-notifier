@@ -93,6 +93,7 @@ class SettingsIn(BaseModel):
     sponsor_companies: list[str] = []
     auto_discover: bool = True
     auto_interval_minutes: int = Field(default=15, ge=5, le=1440)
+    auto_idle_interval_minutes: int = Field(default=360, ge=30, le=10080)
     paused: bool = False
 
 
@@ -150,7 +151,15 @@ def overview():
             "stats": db.stats(conn),
             "last_run": db.last_run(conn),
             "setup": _setup_status(conn),
+            "seed": db.get_meta(conn, "seed"),
         }
+
+
+@app.get("/api/sources/auto", dependencies=Admin)
+def auto_sources(q: str = "", limit: int = 50, offset: int = 0):
+    """Auto-discovered companies, most relevant first (there can be thousands)."""
+    with db.connect() as conn:
+        return db.list_auto_sources(conn, q.strip(), max(1, min(limit, 200)), max(0, offset))
 
 
 @app.get("/api/jobs", dependencies=Admin)
@@ -280,8 +289,11 @@ def save_settings(body: SettingsIn):
         values[key] = _clean_words(values[key])
     with db.connect() as conn:
         # Apply a changed interval to companies that were already discovered, not just new ones.
-        conn.execute("UPDATE sources SET interval_minutes = %s WHERE origin = 'auto' AND interval_minutes <> %s",
-                     (values["auto_interval_minutes"], values["auto_interval_minutes"]))
+        conn.execute(
+            """UPDATE sources SET interval_minutes = CASE WHEN relevant_count = 0 THEN %(idle)s ELSE %(active)s END
+               WHERE origin = 'auto'""",
+            {"active": values["auto_interval_minutes"], "idle": values["auto_idle_interval_minutes"]},
+        )
         return db.save_settings(conn, values)
 
 

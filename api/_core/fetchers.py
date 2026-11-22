@@ -73,7 +73,9 @@ def client() -> httpx.Client:
             _client = httpx.Client(
                 timeout=httpx.Timeout(12.0, connect=6.0),
                 follow_redirects=True,
-                limits=httpx.Limits(max_connections=40, max_keepalive_connections=20),
+                # Keep plenty of connections alive between runs: a new TLS handshake costs far more
+                # CPU than the request itself.
+                limits=httpx.Limits(max_connections=60, max_keepalive_connections=60, keepalive_expiry=300),
                 headers={"User-Agent": USER_AGENT, "Accept": "application/json, text/html;q=0.9, */*;q=0.8"},
             )
         return _client

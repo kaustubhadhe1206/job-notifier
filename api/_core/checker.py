@@ -9,11 +9,11 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 
-from . import db, detect, eligibility, fetchers, notifier, sheets
+from . import db, detect, discovery, eligibility, fetchers, notifier, seeder, sheets
 from .filters import Filters
 
-MAX_SOURCES_PER_RUN = 60   # keeps one run well inside Vercel's 60s limit and the free CPU budget
-FETCH_WORKERS = 12
+MAX_SOURCES_PER_RUN = 100  # a run checks at most this many sources (mostly cheap "not modified" replies)
+FETCH_WORKERS = 20
 MAX_DESCRIPTIONS_PER_RUN = 60  # full descriptions fetched per run; the rest wait for the next run
 MAX_READ_ATTEMPTS = 4          # tries to read a description before deciding without it
 PENDING_PER_RUN = 30           # jobs whose description couldn't be read earlier, retried each run
@@ -115,7 +115,10 @@ def run_check(trigger: str = "cron", force: bool = False, source_ids: list[int] 
     summary = {"checked": len(sources), "unchanged": 0, "new_jobs": 0, "matched": 0, "emailed": 0,
                "discovered": 0, "errors": [], "new": []}
     boards: dict[str, dict] = {}
+    names: dict[str, str] = {}
     candidates: list[tuple[int, dict, fetchers.Job]] = []  # (job row id, source, job)
+    auto_interval = int(settings.get("auto_interval_minutes") or 15)
+    idle_interval = int(settings.get("auto_idle_interval_minutes") or 360)
 
     with db.connect() as conn:
         for source, res in zip(sources, results):
@@ -136,45 +139,66 @@ def run_check(trigger: str = "cron", force: bool = False, source_ids: list[int] 
                 for j in res.jobs:  # company boards: the company is the board itself
                     j.company = j.company or source["name"]
             observed = source["kind"] in fetchers.OBSERVED_KINDS and _recently_checked(source)
-            reasons = {j.external_id: filters.reason(j, baseline=baseline, observed=observed) for j in res.jobs}
-            # Jobs start unmatched; candidates are decided below after reading their descriptions.
-            rows = [{
-                "external_id": j.external_id,
-                "title": j.title[:500],
-                "company": (j.company or "")[:200],
-                "location": (j.location or "")[:300],
-                "url": j.url,
-                "posted_at": j.posted_at.isoformat() if fetchers.is_precise(j.posted_at) else None,
-                "baseline": baseline,
-                "matched": False,
-                "note": None if baseline else reasons[j.external_id],
-            } for j in res.jobs]
+            engineering = [j for j in res.jobs if filters.hires_engineers(j)]
+
+            # Only jobs that fit your filters (role, level, company, US) are stored: with thousands
+            # of companies watched, storing every posting would fill the free database.
+            reasons, rows = {}, []
+            for j in res.jobs:
+                if filters.static_reason(j) is not None:
+                    continue
+                reasons[j.external_id] = filters.reason(j, baseline=baseline, observed=observed)
+                rows.append({
+                    "external_id": j.external_id,
+                    "title": j.title[:500],
+                    "company": (j.company or "")[:200],
+                    "location": (j.location or "")[:300],
+                    "url": j.url,
+                    "posted_at": j.posted_at.isoformat() if fetchers.is_precise(j.posted_at) else None,
+                    "baseline": baseline,
+                    "matched": False,  # decided below, after reading the description
+                    "note": reasons[j.external_id],
+                })
             inserted = db.insert_jobs(conn, source["id"], rows)
-            db.source_ok(conn, source["id"], job_count=len(res.jobs), etag=res.etag, ids_hash=ids_hash)
+
+            # Companies with US engineering openings are checked often; others every few hours.
+            interval = None
+            if source["origin"] == "auto" and source["kind"] in fetchers.BOARD_KINDS:
+                interval = auto_interval if engineering else idle_interval
+            db.source_ok(conn, source["id"], job_count=len(res.jobs), etag=res.etag, ids_hash=ids_hash,
+                         relevant_count=len(engineering), interval_minutes=interval)
 
             if not baseline:
                 summary["new_jobs"] += len(inserted)
             new_rows = {r["external_id"]: r["id"] for r in inserted}
             candidates += [(new_rows[j.external_id], source, j) for j in res.jobs
-                           if j.external_id in new_rows and reasons[j.external_id] is None]
+                           if j.external_id in new_rows and reasons.get(j.external_id, "x") is None]
 
-            # Auto-discovery: links to company boards inside feed posts become new watched sources.
-            if settings.get("auto_discover") and source["kind"] in fetchers.FEED_KINDS and inserted:
-                new_ids = {r["external_id"] for r in inserted}
-                for j in res.jobs:
-                    if j.external_id not in new_ids:
-                        continue
+            # Discovery from feeds and LinkedIn: (1) links to company career pages inside posts,
+            # (2) names of companies hiring engineers, looked up on the hiring platforms later.
+            if settings.get("auto_discover") and source["kind"] in fetchers.FEED_KINDS:
+                for j in engineering:
                     for kind, cfg in detect.find_boards(f"{j.url} {j.text}"):
                         key = fetchers.board_key(kind, cfg)
                         if key not in boards:
                             name = j.company if j.company and len(j.company) < 60 else detect.name_for(kind, cfg)
                             boards[key] = {"name": name, "kind": kind, "config": cfg,
                                            "url": fetchers.public_url(kind, cfg), "board_key": key}
+                    key = eligibility.normalize_company(j.company)
+                    if len(key) >= 2 and len(j.company) < 60:
+                        names[key] = j.company.strip()
 
         if boards:
-            interval = int(settings.get("auto_interval_minutes") or 15)
-            summary["discovered"] = db.add_auto_sources(conn, list(boards.values()), interval)
+            summary["discovered"] = db.add_auto_sources(conn, list(boards.values()), auto_interval)
+        if names:
+            summary["queued_companies"] = db.enqueue_companies(conn, names)
         conn.commit()
+
+        # Look up career pages for a few queued company names, and grow the list from Common Crawl.
+        if settings.get("auto_discover"):
+            summary["discovered"] += discovery.lookup_queued_companies(conn, auto_interval, started)
+            summary["seeded"] = seeder.step(conn, auto_interval, started)
+            conn.commit()
 
         # Work-authorization check (clearance / citizenship / sponsorship) for new candidates,
         # plus earlier ones whose description couldn't be read yet.
