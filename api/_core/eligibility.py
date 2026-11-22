@@ -1,0 +1,223 @@
+"""Work-authorization checks for an F-1 student who needs H-1B sponsorship.
+
+For each new job that passes the title/location filters we read the full description and:
+  1. block it if it requires a security clearance, US citizenship, a green card, or "US persons"
+     (ITAR/export control),
+  2. block it if it says there is no visa sponsorship,
+  3. otherwise look for evidence the employer sponsors: the posting says so, the company is on
+     your own sponsor list, or the company appears in USCIS H-1B approval data.
+
+Text rules are deliberately conservative (they skip "no clearance required", EEO boilerplate
+like "without regard to citizenship status", and application questions ending in "?").
+"""
+from __future__ import annotations
+
+import gzip
+import html
+import json
+import os
+import re
+import threading
+from dataclasses import dataclass
+
+DATA_PATH = os.path.join(os.path.dirname(__file__), "data", "h1b_sponsors.json.gz")
+
+# ---------------------------------------------------------------- company names
+
+LEGAL_SUFFIXES = {
+    "INC", "INCORPORATED", "LLC", "LLP", "LP", "LTD", "LIMITED", "CORP", "CORPORATION", "CO", "COMPANY",
+    "PLC", "PC", "PLLC", "PBC", "GMBH", "AG", "SA", "BV", "NV", "USA", "US", "AMERICA", "AMERICAS", "NA",
+    "HOLDINGS", "HOLDING", "GROUP", "THE", "TECHNOLOGIES", "TECHNOLOGY", "TECH", "LABS", "LAB", "SOFTWARE",
+    "SYSTEMS", "SOLUTIONS", "SERVICES", "SERVICE", "HQ", "AI", "IO", "COM", "INTERNATIONAL", "GLOBAL",
+}
+
+
+def normalize_company(name: str) -> str:
+    """'Scale AI, Inc.' -> 'SCALE', 'The Trade Desk Inc' -> 'TRADE DESK', 'Amazon.com Services LLC' -> 'AMAZON'."""
+    s = (name or "").upper()
+    s = re.sub(r"\(.*?\)", " ", s)              # "Acme (YC W24)" -> "Acme"
+    s = s.replace("&", " AND ").replace(".COM", " COM")
+    s = re.sub(r"\bL\.?\s?L\.?\s?C\b\.?", " LLC ", s)
+    s = re.sub(r"[^A-Z0-9 ]+", " ", s)
+    tokens = s.split()
+    if tokens and tokens[0] == "THE":
+        tokens = tokens[1:]
+    while len(tokens) > 1 and tokens[-1] in LEGAL_SUFFIXES:
+        tokens.pop()
+    return " ".join(tokens)
+
+
+_db: dict | None = None
+_db_lock = threading.Lock()
+
+
+def sponsor_db() -> dict:
+    """{normalized name: [initial approvals, continuing approvals, last fiscal year, legal name]}"""
+    global _db
+    with _db_lock:
+        if _db is None:
+            try:
+                with gzip.open(DATA_PATH, "rt", encoding="utf-8") as f:
+                    _db = json.load(f)
+            except FileNotFoundError:
+                _db = {"years": [], "employers": {}}
+        return _db
+
+
+def lookup_sponsor(company: str) -> dict | None:
+    key = normalize_company(company)
+    if len(key) < 2:
+        return None
+    rec = sponsor_db()["employers"].get(key)
+    if not rec:
+        return None
+    initial, continuing, last_fy, legal = rec
+    return {"initial": initial, "continuing": continuing, "total": initial + continuing,
+            "last_fy": last_fy, "legal_name": legal}
+
+
+def sponsor_years() -> str:
+    years = sponsor_db().get("years") or []
+    return f"FY{min(years)}–{str(max(years))[-2:]}" if years else ""
+
+
+# ---------------------------------------------------------------- text rules
+
+def html_to_text(s: str, limit: int = 40000) -> str:
+    s = re.sub(r"(?is)<(script|style|noscript|svg)\b.*?</\1>", " ", s or "")
+    s = html.unescape(re.sub(r"<[^>]+>", " ", s))
+    return " ".join(s.split())[:limit]
+
+
+US = r"(?:u\.?\s?s\.?(?:a\.?)?|united states|american)"
+NEGATED_BEFORE = re.compile(r"(?:\bno\b|\bnot\b|n't\b|\bnever\b|\bneither\b)[^.;:]{0,25}$", re.I)
+NEGATED_AFTER = re.compile(r"^[^.;:]{0,20}\b(?:not|isn't|is not|aren't|no longer)\b(?:\s+\w+)?\s+(?:required|needed|necessary)", re.I)
+EEO_CONTEXT = re.compile(r"regard to|discriminat|basis of|protected (?:class|status|characteristic)|equal (?:employment )?opportunity|"
+                         r"affirmative action|e-verify|immigration reform|form i-9|eligibility verification", re.I)
+
+CLEARANCE = [re.compile(p, re.I) for p in [
+    r"\bts\s*/\s*sci\b",
+    r"\btop[\s-]secret\b",
+    r"\b(?:security|secret|government|federal|dod|doe|q|l)[\s-]clearances?\b",
+    r"\bclearance (?:is |will be )?required\b",
+    r"\b(?:active|current|existing|interim) (?:dod |government |federal )?(?:secret|ts|clearance)\b",
+    r"\b(?:full[\s-]scope|ci|lifestyle) poly(?:graph)?\b",
+    r"\bpolygraph\b",
+    r"\bpublic trust (?:clearance|position|background|investigation|eligib\w*|determination)\b",
+    r"\b(?:able|ability|eligible|eligibility) to (?:obtain|receive|hold|maintain) (?:an? )?(?:\w+ )?clearance\b",
+]]
+CITIZENSHIP = [re.compile(p, re.I) for p in [
+    rf"\b(?:must|shall|required to|need to|needs to|have to|has to) (?:be|hold|have|possess|maintain) (?:an? )?{US} (?:citizen\w*|nationals?|persons?)\b",
+    rf"\b{US} citizen(?:ship|s)? (?:is |are )?(?:required|only|mandatory|needed|is a requirement|is a must)\b",
+    rf"\b(?:only|exclusively) (?:open |available )?to {US} citizens\b",
+    rf"\b{US} citizens? (?:or|and|/) (?:{US} )?(?:lawful )?(?:permanent residents?|green card holders?|gc holders?|lprs?)\b",
+    r"\b(?:requires?|required|requiring) (?:an? )?(?:active )?(?:u\.?\s?s\.? )?(?:citizenship|green card|permanent residency)\b",
+    r"\bcitizenship (?:is )?(?:required|mandatory)\b",
+    r"\bproof of (?:u\.?\s?s\.? )?citizenship\b",
+    r"\b(?:green card|permanent residen\w*|gc) (?:holders? )?(?:only|required)\b",
+    r"\b(?:usc|us citizens?|gc)\s*(?:/|or|and|&)\s*(?:gc|usc|green card)(?: holders?)? (?:only|required|candidates only)\b",
+    r"\bitar\b",
+    rf"\bexport[\s-]control\w*\b[^.]{{0,150}}\b{US} persons?\b",
+    rf"\b{US} persons? (?:status )?(?:is |are )?(?:required|only)\b",
+    rf"\bmust (?:qualify as|meet the definition of) an? {US} person\b",
+]]
+NO_SPONSORSHIP = [re.compile(p, re.I) for p in [
+    r"\b(?:not|unable to|cannot|can't|can ?not|won't|will not|do not|does not|don't|doesn't|are not able to|is not able to|"
+    r"aren't able to|no longer)\s+(?:currently\s+|presently\s+|at this time\s+)?(?:be\s+)?(?:able to\s+)?"
+    r"(?:offer|offering|provide|providing|sponsor|sponsoring|support|supporting|consider|considering|accommodate|accept)"
+    r"\b[^.?]{0,70}?\b(?:sponsor\w*|visas?|h-?1-?b|work permits?|immigration)",
+    r"\bnot (?:be )?eligible for (?:\w+ ){0,3}sponsorship\b",
+    r"\bno (?:visa |h-?1-?b |immigration |employment |employer |work |job )?sponsorships?\b",
+    r"\bsponsorships? (?:is |are |will )?(?:not|unavailable)\b",
+    r"\bwithout (?:the )?(?:need for|need of|requiring|requirement (?:of|for)|use of)? ?(?:the )?(?:current or future |now or in the future |any |future )?"
+    r"(?:visa |employer |company |immigration |employment |h-?1-?b )?sponsorship\b",
+    r"\b(?:no|not accepting|cannot accept|can't accept|unable to accept)\s+(?:opt|cpt|h-?1-?b|f-?1|ead|visa holders?|visa candidates?)\b",
+    r"\b(?:h-?1-?b|visa)s? (?:sponsorship )?(?:is |are )?not (?:available|offered|provided|supported|possible|sponsored)\b",
+    r"\b(?:require|need)s? (?:\w+ ){0,4}sponsorship[^.?]{0,80}\b(?:will not|won't|are not|is not|not be|ineligible|cannot)\b",
+    r"\b(?:sponsorship|sponsor)[^.?]{0,40}\b(?:is|are) not (?:something|an option)\b",
+]]
+POSITIVE = [re.compile(p, re.I) for p in [
+    r"\b(?:visa|h-?1-?b|immigration|work visa|employment visa) sponsorship (?:is |will be )?(?:available|offered|provided|possible|supported|for qualified)\b",
+    r"\b(?:will|can|do|does|are able to|is able to|are happy to|is happy to|are willing to|is willing to|gladly|happily|proudly) "
+    r"sponsor (?:\w+ )?(?:visas?|h-?1-?bs?|work visas?|employment visas?|green cards?)\b",
+    r"\bwe (?:also |do |can |will )?sponsor (?:visas?|h-?1|work|international|employment|immigration)",
+    r"\b(?:offer|offers|offering|provide|provides|providing|support|supports|supporting) (?:\w+ )?(?:visa|h-?1-?b|immigration) sponsorship\b",
+    r"\b(?:open|willing) to sponsor\w*\b",
+    r"\bsponsorship (?:is )?available\b",
+    r"\bh-?1-?b (?:transfers?|sponsorship) (?:is |are )?(?:ok|welcome|available|supported|possible)\b",
+    r"\bvisa sponsorship\s*[:\-]\s*yes\b",
+    r"\b(?:opt|cpt|stem opt|f-?1)(?: students| candidates| applicants)? (?:are |is )?(?:welcome|encouraged|accepted|ok)\b",
+]]
+HN_VISA_TAG = re.compile(r"(?:^|\|)\s*(?:visa|visas|visa sponsorship|visa ok|h-?1-?b ok|will sponsor)\s*(?:\||$)", re.I)
+
+
+def _quote(text: str, m: re.Match) -> str:
+    a, b = max(0, m.start() - 50), min(len(text), m.end() + 50)
+    return ("…" if a else "") + text[a:b].strip() + ("…" if b < len(text) else "")
+
+
+def _find(patterns, text: str, eeo_guard: bool = False):
+    for rx in patterns:
+        for m in rx.finditer(text):
+            before = text[max(0, m.start() - 40):m.start()]
+            after = text[m.end():m.end() + 40]
+            if NEGATED_BEFORE.search(before) and rx not in NO_SPONSORSHIP:
+                continue
+            if NEGATED_AFTER.search(after):
+                continue
+            # skip application questions ("Will you now or in the future require sponsorship?")
+            sentence_end = re.search(r"[.?!]", after)
+            if sentence_end and sentence_end.group() == "?" and rx in NO_SPONSORSHIP:
+                continue
+            if eeo_guard and EEO_CONTEXT.search(text[max(0, m.start() - 150):m.end() + 150]):
+                continue
+            return m
+    return None
+
+
+@dataclass
+class Verdict:
+    ok: bool     # email it?
+    visa: str    # stated | history | listed | unknown | blocked | off
+    note: str    # short human explanation shown in the email and dashboard
+
+
+def evaluate(title: str, company: str, description: str, settings: dict) -> Verdict:
+    mode = settings.get("visa_mode") or "allow_unknown"  # allow_unknown | require | off
+    text = f"{title}. {description or ''}"
+    read_note = "" if description else " (couldn't read the full description)"
+
+    if settings.get("skip_ineligible", True):
+        m = _find(CLEARANCE, text)
+        if m:
+            return Verdict(False, "blocked", f"Needs a security clearance: “{_quote(text, m)}”")
+        m = _find(CITIZENSHIP, text, eeo_guard=True)
+        if m:
+            return Verdict(False, "blocked", f"US citizens / green card / US persons only: “{_quote(text, m)}”")
+        if mode != "off":
+            m = _find(NO_SPONSORSHIP, text)
+            if m:
+                return Verdict(False, "blocked", f"Says no visa sponsorship: “{_quote(text, m)}”")
+
+    if mode == "off":
+        return Verdict(True, "off", "")
+
+    if HN_VISA_TAG.search(title):
+        return Verdict(True, "stated", "Post is tagged VISA (sponsors visas)")
+    m = _find(POSITIVE, text)
+    if m:
+        return Verdict(True, "stated", f"Posting mentions sponsorship: “{_quote(text, m)}”")
+
+    listed = {normalize_company(c) for c in settings.get("sponsor_companies") or [] if c.strip()}
+    if normalize_company(company) in listed:
+        return Verdict(True, "listed", "On your sponsor list")
+
+    rec = lookup_sponsor(company)
+    if rec and rec["total"] > 0:
+        what = f"{rec['initial']} new" if rec["initial"] else f"{rec['continuing']} extension/transfer"
+        return Verdict(True, "history",
+                       f"Got {rec['total']} H-1B approvals ({what}) in {sponsor_years()} as {rec['legal_name']}{read_note}")
+
+    note = (f"No clearance, citizenship or sponsorship restrictions in the posting; "
+            f"no H-1B record found for “{company}” ({sponsor_years()}){read_note}")
+    return Verdict(mode == "allow_unknown", "unknown", note)
