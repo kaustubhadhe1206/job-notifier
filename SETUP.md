@@ -34,16 +34,16 @@ python -c "import secrets; print(secrets.token_hex(24))"
 
 ## Step 2 — Put the code on GitHub
 
-1. Sign in at [github.com](https://github.com) → **New repository** → name it `hidden-jobs` → choose **Private** → **Create repository** (don't add a README).
+1. Sign in at [github.com](https://github.com) → **New repository** → name it `job-notifier` → choose **Private** → **Create repository** (don't add a README).
 2. In PowerShell:
 
    ```powershell
    cd "C:\Users\KAUSTUBH\Desktop\17) Hidden Jobs AI Application Platform"
    git init
    git add .
-   git commit -m "Hidden Jobs"
+   git commit -m "Job Notifier"
    git branch -M main
-   git remote add origin https://github.com/YOUR-USERNAME/hidden-jobs.git
+   git remote add origin https://github.com/YOUR-USERNAME/job-notifier.git
    git push -u origin main
    ```
 
@@ -54,7 +54,7 @@ python -c "import secrets; print(secrets.token_hex(24))"
 ## Step 3 — Supabase (database)
 
 1. Sign up at [supabase.com](https://supabase.com) → **New project**.
-   - Name: `hidden-jobs`
+   - Name: `job-notifier`
    - Database password: click **Generate a password** and save it
    - Region: an **East US** region (closest to Vercel's default)
 2. Wait about 2 minutes for the project to start.
@@ -71,7 +71,7 @@ Free Supabase projects pause after a week without activity; the every-minute che
 ## Step 4 — Gmail app password (sending email)
 
 1. Go to [myaccount.google.com/security](https://myaccount.google.com/security) and turn on **2-Step Verification** if it's off.
-2. Open [myaccount.google.com/apppasswords](https://myaccount.google.com/apppasswords) → name it `Hidden Jobs` → **Create**.
+2. Open [myaccount.google.com/apppasswords](https://myaccount.google.com/apppasswords) → name it `Job Notifier` → **Create**.
 3. Copy the 16-character password.
 
 You now have:
@@ -84,14 +84,14 @@ Alerts go to the same address unless you set **`NOTIFY_EMAIL`** (or change it la
 
 ## Step 5 — Google Sheet (job tracker)
 
-1. Go to [sheets.new](https://sheets.new) → rename the spreadsheet to `Hidden Jobs`.
+1. Go to [sheets.new](https://sheets.new) → rename the spreadsheet to `Job Notifier`.
 2. **Extensions → Apps Script**. A code editor opens.
 3. Delete everything in `Code.gs`, then paste the whole content of [`google-sheets/Code.gs`](google-sheets/Code.gs) from this project.
 4. On the line `const SECRET = 'PASTE_YOUR_SHEETS_SECRET_HERE';`, put your `SHEETS_SECRET` between the quotes.
 5. Click **Save** (disk icon).
 6. In the toolbar, pick the function **`setup`** in the dropdown → **Run**.
    - Google asks for permission → **Review permissions** → choose your account.
-   - You'll see "Google hasn't verified this app". That's expected for your own script: **Advanced → Go to Hidden Jobs (unsafe) → Allow**.
+   - You'll see "Google hasn't verified this app". That's expected for your own script: **Advanced → Go to Job Notifier (unsafe) → Allow**.
    - A new **Jobs** tab with headers appears in your spreadsheet.
 7. **Deploy → New deployment** → click the gear next to "Select type" → **Web app**:
    - Execute as: **Me**
@@ -107,7 +107,7 @@ Alerts go to the same address unless you set **`NOTIFY_EMAIL`** (or change it la
 ## Step 6 — Vercel (hosting)
 
 1. Sign up at [vercel.com](https://vercel.com) **with your GitHub account**.
-2. **Add New… → Project** → find `hidden-jobs` → **Import**.
+2. **Add New… → Project** → find `job-notifier` → **Import**.
 3. Leave the build settings as they are (Vercel detects Vite and the Python API from `vercel.json`).
 4. Open **Environment Variables** and add:
 
@@ -123,7 +123,7 @@ Alerts go to the same address unless you set **`NOTIFY_EMAIL`** (or change it la
    | `NOTIFY_EMAIL` | optional: where alerts go |
    | `ANTHROPIC_API_KEY` | optional: from Step 9 (AI check); can be added later |
 
-5. **Deploy**. After a minute you get a URL like `https://hidden-jobs-xyz.vercel.app`.
+5. **Deploy**. After a minute you get a URL like `https://job-notifier-xyz.vercel.app`.
 6. Optional: add **`APP_URL`** = that URL (Settings → Environment Variables) so emails link to your dashboard, then **Deployments → ⋯ → Redeploy**.
 
 > Any time you add or change an environment variable, redeploy for it to take effect.
@@ -143,7 +143,7 @@ Alerts go to the same address unless you set **`NOTIFY_EMAIL`** (or change it la
 
 1. Sign up at [cron-job.org](https://cron-job.org) → **Cronjobs → Create cronjob**.
 2. Fill in:
-   - Title: `Hidden Jobs`
+   - Title: `Job Notifier`
    - URL: `https://YOUR-APP.vercel.app/api/cron?key=YOUR_CRON_SECRET`
    - Execution schedule: **Every minute**
 3. **Create**.
@@ -169,7 +169,7 @@ The rule-based checks catch the usual wording, but some postings phrase requirem
 
 ### 9b. Create the API key
 
-1. **Settings → API keys → Create key.** Name it `hidden-jobs`.
+1. **Settings → API keys → Create key.** Name it `job-notifier`.
 2. Copy the key right away (it starts with `sk-ant-`); it's only shown once. This is your **`ANTHROPIC_API_KEY`**.
 3. Never commit it to GitHub or paste it anywhere public. It lives only in Vercel (and in your local `.env` if you run the app locally).
 

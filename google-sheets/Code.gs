@@ -1,5 +1,5 @@
 /**
- * Hidden Jobs → Google Sheets bridge.
+ * Job Notifier → Google Sheets bridge.
  *
  * Paste this into your spreadsheet (Extensions → Apps Script), set SECRET to the same value as
  * SHEETS_SECRET in Vercel, run `setup` once, then Deploy → New deployment → Web app
@@ -21,7 +21,7 @@ function setup() {
 }
 
 function doGet() {
-  return reply_({ ok: true, message: 'Hidden Jobs sheet bridge is running. The app talks to it with POST.' });
+  return reply_({ ok: true, message: 'Job Notifier sheet bridge is running. The app talks to it with POST.' });
 }
 
 function doPost(e) {

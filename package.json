@@ -1,5 +1,5 @@
 {
-  "name": "hidden-jobs",
+  "name": "job-notifier",
   "private": true,
   "version": "1.0.0",
   "type": "module",

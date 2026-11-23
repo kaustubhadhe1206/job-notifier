@@ -59,7 +59,7 @@ function Logo() {
         <circle cx="15" cy="15" r="7" fill="none" stroke="#fff" strokeWidth="3" />
         <path d="M20 20l5 5" stroke="#fff" strokeWidth="3" strokeLinecap="round" />
       </svg>
-      <span>Hidden Jobs</span>
+      <span>Job Notifier</span>
     </div>
   );
 }

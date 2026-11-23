@@ -1,4 +1,4 @@
-"""Hidden Jobs API - one FastAPI app served by Vercel's Python runtime at /api/*."""
+"""Job Notifier API - one FastAPI app served by Vercel's Python runtime at /api/*."""
 from __future__ import annotations
 
 import hmac
@@ -23,7 +23,7 @@ from pydantic import BaseModel, Field  # noqa: E402
 from _core import checker, db, detect, eligibility, fetchers, llm_check, notifier, sheets  # noqa: E402
 from _core.presets import DEFAULT_SETTINGS  # noqa: E402
 
-app = FastAPI(title="Hidden Jobs", docs_url=None, redoc_url=None, openapi_url=None)
+app = FastAPI(title="Job Notifier", docs_url=None, redoc_url=None, openapi_url=None)
 
 
 @app.exception_handler(Exception)
@@ -346,7 +346,7 @@ def test_email():
         to = notifier.recipient(db.get_settings(conn))
     sample = [{
         "title": "Senior Software Engineer (test email)",
-        "company": "Hidden Jobs",
+        "company": "Job Notifier",
         "location": "Remote",
         "url": os.environ.get("APP_URL") or "https://vercel.com",
         "posted_at": None,

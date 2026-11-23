@@ -29,7 +29,7 @@ def send_email(to: str, subject: str, text: str, html: str) -> None:
 
     msg = EmailMessage()
     msg["Subject"] = subject
-    msg["From"] = os.environ.get("EMAIL_FROM") or f"Hidden Jobs <{user}>"
+    msg["From"] = os.environ.get("EMAIL_FROM") or f"Job Notifier <{user}>"
     msg["To"] = to
     msg.set_content(text)
     msg.add_alternative(html, subtype="html")
@@ -110,7 +110,7 @@ def send_jobs_email(to: str, jobs: list[dict], app_url: str = "") -> None:
     footer = f'<a href="{escape(app_url, quote=True)}" style="color:#6b7280">Open dashboard</a>' if app_url else ""
     html = f"""<!doctype html><html><body style="margin:0;background:#f9fafb;font-family:-apple-system,Segoe UI,Roboto,sans-serif">
       <div style="max-width:620px;margin:0 auto;padding:24px">
-        <div style="font-size:13px;color:#6b7280;text-transform:uppercase;letter-spacing:.06em">Hidden Jobs</div>
+        <div style="font-size:13px;color:#6b7280;text-transform:uppercase;letter-spacing:.06em">Job Notifier</div>
         <h1 style="font-size:20px;margin:6px 0 12px;color:#111827">{n} new job{'s' if n != 1 else ''} just posted</h1>
         <table style="width:100%;border-collapse:collapse;background:#fff;border-radius:10px">
           {''.join(rows)}

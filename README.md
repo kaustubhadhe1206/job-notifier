@@ -1,4 +1,4 @@
-# Hidden Jobs
+# Job Notifier
 
 Emails you within minutes when a **Software Engineer / AI Engineer** job is posted at a **US tech company**, with a focus on startups and mid-sized companies most people haven't heard of.
 
