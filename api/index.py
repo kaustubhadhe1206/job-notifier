@@ -207,7 +207,7 @@ def create_source(body: SourceIn):
         fetchers.validate(body.kind, body.config)
     except ValueError as e:
         raise HTTPException(422, str(e)) from e
-    interval = body.interval_minutes or (10 if body.kind == "linkedin" else 1)
+    interval = body.interval_minutes or (10 if body.kind == "linkedin" else 2)
     with db.connect() as conn:
         source = db.create_source(
             conn,

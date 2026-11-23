@@ -74,7 +74,7 @@ WATCHLIST = [
      {"keywords": "engineer", "location": "United States", "experience": LINKEDIN_ENTRY_LEVELS,
       "company_ids": "10667,1815218,1063,1028,1009,15564"}, 10),
     # Greenhouse / Lever / Ashby
-    *[(n, _GH, {"board": b}, 1) for n, b in [
+    *[(n, _GH, {"board": b}, 2) for n, b in [
         ("Stripe", "stripe"), ("Airbnb", "airbnb"), ("Databricks", "databricks"), ("Pinterest", "pinterest"),
         ("Lyft", "lyft"), ("Coinbase", "coinbase"), ("Robinhood", "robinhood"), ("Dropbox", "dropbox"),
         ("Reddit", "reddit"), ("Figma", "figma"), ("Instacart", "instacart"), ("Roblox", "roblox"),
@@ -82,8 +82,8 @@ WATCHLIST = [
         ("MongoDB", "mongodb"), ("Anthropic", "anthropic"), ("Scale AI", "scaleai"), ("Brex", "brex"),
         ("Asana", "asana"), ("Okta", "okta"), ("Elastic", "elastic"), ("GitLab", "gitlab"), ("Samsara", "samsara"),
         ("Affirm", "affirm"), ("Chime", "chime"), ("Duolingo", "duolingo")]],
-    *[(n, _LV, {"company": b, "region": "global"}, 1) for n, b in [("Palantir", "palantir"), ("Spotify", "spotify")]],
-    *[(n, _AB, {"board": b}, 1) for n, b in [
+    *[(n, _LV, {"company": b, "region": "global"}, 2) for n, b in [("Palantir", "palantir"), ("Spotify", "spotify")]],
+    *[(n, _AB, {"board": b}, 2) for n, b in [
         ("OpenAI", "openai"), ("Notion", "notion"), ("Ramp", "ramp"), ("Plaid", "plaid"), ("Snowflake", "snowflake"),
         ("Perplexity", "perplexity")]],
 ]

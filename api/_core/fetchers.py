@@ -17,7 +17,7 @@ import json
 import re
 import threading
 import xml.etree.ElementTree as ET
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from email.utils import parsedate_to_datetime
 from urllib.parse import parse_qsl, urlencode, urljoin, urlsplit, urlunsplit
@@ -52,6 +52,9 @@ class FetchCtx:
     one tiny '304 Not Modified' response instead of a download + parse."""
     etag: str | None = None
     new_etag: str | None = None
+    # Extra postings used only to discover companies (never emailed), e.g. every open role on the
+    # Simplify list, while the fetcher itself returns only today's.
+    discovery: list = field(default_factory=list)
 
 
 class NotModified(Exception):
@@ -534,14 +537,18 @@ def fetch_simplify(c, cfg, ctx):
             name = " ".join(_EMOJI.sub(" ", html.unescape(_strip_tags(cells[0]))).split())  # "🔥 Amazon" -> "Amazon"
             company = company if name in ("", "↳") else name  # '↳' = same company as the row above
             apply = re.search(r'<a href="([^"]+)"[^>]*>\s*<img[^>]*alt="Apply"', cells[3])
-            if _strip_tags(cells[4]) != "0d" or not apply:
-                continue
+            if not apply:
+                continue  # closed role
             title = " ".join(_EMOJI.sub(" ", html.unescape(_strip_tags(cells[1]))).split())
             loc = re.sub(r"<summary>.*?</summary>", "", cells[2], flags=re.S)
             loc = "; ".join(p for p in (html.unescape(_strip_tags(x)) for x in re.split(r"</?br\s*/?>", loc)) if p)
             url = _clean_apply_url(apply.group(1))
             sid = re.search(r"simplify\.jobs/p/([0-9a-f-]{36})", cells[3])
-            jobs.append(Job(sid.group(1) if sid else url, title, url, loc, company[:100], None, text=url))
+            job = Job(sid.group(1) if sid else url, title, url, loc, company[:100], None, text=url)
+            # Every open role points at a company's hiring page: all of them feed company discovery.
+            ctx.discovery.append(job)
+            if _strip_tags(cells[4]) == "0d":
+                jobs.append(job)
     return jobs
 
 

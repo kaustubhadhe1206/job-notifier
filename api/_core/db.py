@@ -188,6 +188,10 @@ def _migrate_presets(conn, fresh: bool) -> None:
                 _add_preset(conn, p)
         if version < 3:
             _add_watchlist(conn)  # v3: big tech watchlist
+        if version < 4:
+            # v4: your companies every 2 minutes instead of 1, leaving free-tier CPU for more
+            # discovered companies (the Simplify source above is v4 too)
+            conn.execute("UPDATE sources SET interval_minutes = 2 WHERE origin = 'manual' AND interval_minutes < 2")
         version = PRESET_VERSION
     conn.execute(
         "INSERT INTO settings (key, value) VALUES ('_presets_version', %s) "

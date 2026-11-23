@@ -398,7 +398,7 @@ function SourcesTab({ sources, stats, seed, reload, notify }) {
       <AddSource reload={reload} notify={notify} />
       <SourceGroup
         title="Your companies"
-        subtitle="Checked every minute."
+        subtitle="Checked every 2 minutes."
         rows={groups.manual}
         empty="Add companies you care about above. Paste a careers URL or type a name."
         reload={reload}

@@ -25,13 +25,14 @@ class FetchResult:
     error: str | None = None
     not_modified: bool = False
     etag: str | None = None
+    discovery: list | None = None
 
 
 def fetch_source(source: dict) -> FetchResult:
     ctx = fetchers.FetchCtx(etag=source.get("etag") if source.get("initialized") else None)
     try:
         jobs = fetchers.fetch(source["kind"], fetchers.client(), source["config"], ctx)
-        return FetchResult(jobs=jobs, etag=ctx.new_etag)
+        return FetchResult(jobs=jobs, etag=ctx.new_etag, discovery=ctx.discovery)
     except fetchers.NotModified:
         return FetchResult(not_modified=True, etag=source.get("etag"))
     except Exception as e:  # noqa: BLE001 - recorded on the source and shown in the UI
@@ -229,7 +230,8 @@ def run_check(trigger: str = "cron", force: bool = False, source_ids: list[int] 
             # Discovery from feeds and LinkedIn: (1) links to company career pages inside posts,
             # (2) names of companies hiring engineers, looked up on the hiring platforms later.
             if settings.get("auto_discover") and source["kind"] in fetchers.FEED_KINDS:
-                for j in engineering:
+                extra = [j for j in res.discovery or [] if filters.hires_engineers(j)]
+                for j in engineering + extra:
                     for kind, cfg in detect.find_boards(f"{j.url} {j.text}"):
                         key = fetchers.board_key(kind, cfg)
                         if key not in boards:
