@@ -304,7 +304,11 @@ function JobsTab({ refreshKey }) {
       {jobs && jobs.length === 0 && (
         <div className="empty">
           <p>No jobs here yet.</p>
-          <p className="muted">New postings that match your filters will appear here (and in your inbox) as soon as they're spotted.</p>
+          <p className="muted">
+            {view === "hidden"
+              ? "Jobs appear here when a hidden company (Sources → Hidden companies) posts a new matching role. The roles already open when a company is found aren't sent, so the first ones show up as these companies post again."
+              : "New postings that match your filters will appear here (and in your inbox) as soon as they're spotted."}
+          </p>
         </div>
       )}
       {jobs && jobs.length > 0 && (
@@ -468,10 +472,10 @@ function AutoSources({ reload, notify }) {
     <section className="card flush">
       <div className="card-head">
         <div>
-          <h3>Auto-discovered companies <span className="count">{data.total.toLocaleString()}</span></h3>
+          <h3>Hidden companies <span className="count">{data.total.toLocaleString()}</span></h3>
           <p className="muted small">
-            Watched directly on their own career pages. Companies with US engineering openings are listed first and
-            checked every 15 minutes; the rest every few hours.
+            Found automatically and watched directly on their own career pages; their new jobs are labeled Hidden.
+            Companies with US engineering openings are listed first and checked every 15 minutes; the rest every few hours.
           </p>
         </div>
         <input className="search" placeholder="Search companies…" value={q} onChange={(e) => (setQ(e.target.value), setLimit(25))} />
