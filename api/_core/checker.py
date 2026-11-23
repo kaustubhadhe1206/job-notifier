@@ -92,6 +92,27 @@ def _dedupe(jobs: list[dict]) -> list[dict]:
     return unique
 
 
+def _drop_repeats(conn, work: list[tuple]) -> list[tuple]:
+    """Skip a job another search or board already found (same company and title, last 14 days),
+    e.g. one LinkedIn search finds it at 18:21 and another at 18:51: it's checked and emailed once.
+    work: [(job row id, source, job, attempt)]; earlier finds (retries) win over new ones."""
+    if not work:
+        return work
+    known = {(_norm(r["company"]), _norm(r["title"])): r["source"]
+             for r in db.found_jobs(conn, [item[0] for item in work])}
+    repeats, keep_ids = [], set()
+    for jid, source, job, attempt in sorted(work, key=lambda item: -item[3]):
+        key = (_norm(job.company or source["name"]), _norm(job.title))
+        if key in known:
+            repeats.append({"id": jid, "matched": False, "visa": None, "checks": attempt - 1,
+                            "note": f"Already found via {known[key]}"[:300]})
+        else:
+            known[key] = source["name"]
+            keep_ids.add(jid)
+    db.set_eligibility(conn, repeats)
+    return [item for item in work if item[0] in keep_ids]
+
+
 def _description(item, allow_fetch: bool) -> tuple[str, bool]:
     """(plain text, read_failed)."""
     source, job = item
@@ -269,6 +290,8 @@ def run_check(trigger: str = "cron", force: bool = False, source_ids: list[int] 
             job = fetchers.Job(p["external_id"], p["title"], p["url"] or "", p["location"] or "", p["company"] or "",
                                p["posted_at"])
             work.append((p["id"], src, job, p["checks"] + 1))
+        work = _drop_repeats(conn, work)
+        conn.commit()
         if work:
             ai_usage = ai_usage_for_run(conn, settings)
             verdicts = evaluate_jobs([(s, j) for _, s, j, _ in work], settings, [n for *_, n in work], ai_usage)

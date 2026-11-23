@@ -510,9 +510,20 @@ def pending_jobs(conn, limit: int) -> list[dict]:
                   s.id AS source_id, s.name AS source_name, s.kind, s.config
            FROM jobs j JOIN sources s ON s.id = j.source_id
            WHERE j.visa = 'pending' AND j.first_seen_at > now() - interval '1 day'
-             AND (j.checked_at IS NULL OR j.checked_at < now() - interval '3 minutes')
+             AND (j.checked_at IS NULL OR j.checked_at < now() - interval '40 seconds')
            ORDER BY j.first_seen_at LIMIT %s""",
         (limit,),
+    ).fetchall()
+
+
+def found_jobs(conn, exclude_ids: list[int]) -> list[dict]:
+    """Jobs from the last 14 days that were sent or are being checked (to skip repeats of them)."""
+    return conn.execute(
+        """SELECT COALESCE(NULLIF(j.company, ''), s.name) AS company, j.title, s.name AS source
+           FROM jobs j JOIN sources s ON s.id = j.source_id
+           WHERE (j.matched OR j.visa = 'pending') AND j.first_seen_at > now() - interval '14 days'
+             AND NOT (j.id = ANY(%s))""",
+        (exclude_ids,),
     ).fetchall()
 
 
@@ -602,9 +613,10 @@ def set_meta(conn, key: str, value) -> None:
 
 def recent_jobs(conn, view: str = "matched", limit: int = 200) -> list[dict]:
     where = {
-        "matched": "j.matched",
-        "hidden": "j.matched AND j.channel IN ('hidden', 'hidden_new')",
-        "review":"NOT j.matched AND j.visa IN ('blocked', 'unknown', 'pending')",
+        # jobs still being checked (description not read yet) show with the matches, not as skipped
+        "matched": "(j.matched OR j.visa = 'pending')",
+        "hidden": "(j.matched OR j.visa = 'pending') AND j.channel IN ('hidden', 'hidden_new')",
+        "review": "NOT j.matched AND j.visa IN ('blocked', 'unknown')",
         "new": "NOT j.baseline OR j.matched OR j.visa IS NOT NULL",
         "all": "TRUE",
     }.get(view, "j.matched")

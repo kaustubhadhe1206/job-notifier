@@ -352,7 +352,7 @@ const VISA = {
   listed: ["good", "Sponsor (your list)"],
   unknown: ["dim", "Sponsorship not mentioned"],
   blocked: ["bad", "Not eligible"],
-  pending: ["dim", "Checking…"],
+  pending: ["dim", "Reading the posting…"],
 };
 
 const CHANNELS = {
