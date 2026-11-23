@@ -462,15 +462,16 @@ def finish_companies(conn, results: dict[str, str]) -> None:
 def source_error(conn, source_id: int, error: str, retry_soon: bool = False) -> None:
     """Auto-discovered boards are switched off after repeated errors, or right away if the very
     first check says the board doesn't exist (common for old Common Crawl entries).
-    retry_soon: check again in about a minute instead of a full interval (LinkedIn rate limits
-    pass quickly, and waiting 10 minutes let jobs pile up and arrive an hour old)."""
+    retry_soon: check again in 3 minutes instead of a full interval, for at most 3 errors in a row
+    (LinkedIn rate limits usually pass within minutes, and waiting 10 minutes after each one let
+    jobs pile up and arrive an hour old); after that, back to the normal interval."""
     gone = "HTTP 404" in error
     conn.execute(
         """UPDATE sources SET last_error = %s, error_count = error_count + 1,
                enabled = CASE WHEN origin = 'auto' AND (error_count + 1 >= %s OR (%s AND NOT initialized))
                               THEN FALSE ELSE enabled END,
-               last_checked_at = CASE WHEN %s AND error_count < 10
-                                      THEN now() - make_interval(mins => interval_minutes) + interval '40 seconds'
+               last_checked_at = CASE WHEN %s AND error_count < 3 AND interval_minutes > 3
+                                      THEN now() - make_interval(mins => interval_minutes) + interval '3 minutes 20 seconds'
                                       ELSE last_checked_at END
            WHERE id = %s""",
         (error[:500], AUTO_DISABLE_AFTER_ERRORS, gone, retry_soon, source_id),
