@@ -7,6 +7,7 @@ from __future__ import annotations
 import os
 import threading
 from contextlib import contextmanager
+from datetime import datetime, timedelta, timezone
 
 import psycopg
 from psycopg.rows import dict_row
@@ -192,6 +193,15 @@ def _migrate_presets(conn, fresh: bool) -> None:
             # v4: your companies every 2 minutes instead of 1, leaving free-tier CPU for more
             # discovered companies (the Simplify source above is v4 too)
             conn.execute("UPDATE sources SET interval_minutes = 2 WHERE origin = 'manual' AND interval_minutes < 2")
+        if version < 5:
+            # v5: companies without US engineering openings daily instead of every 6 h (thousands now
+            # come from Common Crawl), tiered intervals for the ones hiring, and a fresh crawl read
+            conn.execute("UPDATE settings SET value = '1440' WHERE key = 'auto_idle_interval_minutes' AND value = '360'")
+            s = {r["key"]: r["value"] for r in conn.execute(
+                "SELECT key, value FROM settings WHERE key IN ('auto_interval_minutes', 'auto_idle_interval_minutes')")}
+            retier_auto_sources(conn, int(s.get("auto_interval_minutes") or 15),
+                                int(s.get("auto_idle_interval_minutes") or 1440))
+            conn.execute("DELETE FROM settings WHERE key = '_seed'")
         version = PRESET_VERSION
     conn.execute(
         "INSERT INTO settings (key, value) VALUES ('_presets_version', %s) "
@@ -326,24 +336,77 @@ def delete_source(conn, source_id: int) -> bool:
     return conn.execute("DELETE FROM sources WHERE id = %s", (source_id,)).rowcount > 0
 
 
-def claim_due_sources(conn, *, force=False, ids=None, limit=60) -> list[dict]:
+def claim_due_sources(conn, *, force=False, ids=None, limit=60, auto_limit=30) -> list[dict]:
     """Atomically pick due sources and stamp last_checked_at, so overlapping runs never fetch the
-    same source twice. Your own companies and feeds go first, then auto-discovered boards that
-    are due, then brand-new boards waiting for their first check."""
+    same source twice. Your own companies and feeds: every due one (up to limit). Discovered
+    companies: at most auto_limit per run (the free-tier CPU budget), most overdue first relative
+    to their interval, so when there are more companies than the budget allows, every company's
+    interval stretches by the same factor. Never-checked companies count as 1.5x overdue."""
     return conn.execute(
-        f"""UPDATE sources s SET last_checked_at = now()
-            WHERE s.id IN (
+        f"""WITH own AS (
                 SELECT id FROM sources
-                WHERE enabled
-                  AND (%(ids)s::int[] IS NULL OR id = ANY(%(ids)s::int[]))
-                  AND ((%(force)s AND origin <> 'auto') OR last_checked_at IS NULL
+                WHERE enabled AND origin <> 'auto' AND (%(ids)s::int[] IS NULL OR id = ANY(%(ids)s::int[]))
+                  AND (%(force)s OR last_checked_at IS NULL
                        OR last_checked_at <= now() - make_interval(mins => interval_minutes) + interval '20 seconds')
-                ORDER BY (origin = 'auto'), (origin = 'auto' AND last_checked_at IS NULL), last_checked_at NULLS FIRST
+                ORDER BY last_checked_at NULLS FIRST
                 LIMIT %(limit)s
+                FOR UPDATE SKIP LOCKED),
+            auto AS (
+                SELECT id FROM sources
+                WHERE enabled AND origin = 'auto' AND (%(ids)s::int[] IS NULL OR id = ANY(%(ids)s::int[]))
+                  AND (last_checked_at IS NULL
+                       OR last_checked_at <= now() - make_interval(mins => interval_minutes) + interval '20 seconds')
+                ORDER BY CASE WHEN last_checked_at IS NULL THEN 1.5
+                              ELSE extract(epoch FROM now() - last_checked_at) / (interval_minutes * 60.0) END DESC
+                LIMIT %(auto_limit)s
                 FOR UPDATE SKIP LOCKED)
+            UPDATE sources s SET last_checked_at = now()
+            WHERE s.id IN (SELECT id FROM own UNION ALL SELECT id FROM auto)
             RETURNING {SOURCE_COLS}""",
-        {"ids": ids, "force": force, "limit": limit},
+        {"ids": ids, "force": force, "limit": limit, "auto_limit": auto_limit},
     ).fetchall()
+
+
+# Discovered companies with more US engineering openings post more often, so they're checked more
+# often: 10+ openings at the base interval, 3-9 at 2x, 1-2 at 4x, none at the idle interval.
+def tier_interval(relevant: int, active: int, idle: int) -> int:
+    if not relevant:
+        return idle
+    return active * (1 if relevant >= 10 else 2 if relevant >= 3 else 4)
+
+
+def retier_auto_sources(conn, active: int, idle: int) -> None:
+    conn.execute(
+        """UPDATE sources SET interval_minutes = CASE WHEN relevant_count = 0 THEN %(idle)s
+                                                      WHEN relevant_count >= 10 THEN %(active)s
+                                                      WHEN relevant_count >= 3 THEN %(active)s * 2
+                                                      ELSE %(active)s * 4 END
+           WHERE origin = 'auto'""",
+        {"active": active, "idle": idle},
+    )
+
+
+CPU_TARGET_MS = 280  # average CPU per every-minute run: ~3.4 h/month, under Vercel Hobby's 4 h
+
+
+def auto_check_budget(conn) -> int:
+    """How many discovered companies a run may check. Self-tuning: every 15 minutes it's nudged
+    up or down so the average run stays near CPU_TARGET_MS."""
+    st = get_meta(conn, "auto_budget") or {"limit": 25}
+    now = datetime.now(timezone.utc)
+    if not st.get("at") or now - datetime.fromisoformat(st["at"]) >= timedelta(minutes=15):
+        row = conn.execute(
+            """SELECT avg(cpu_ms) AS avg, count(*) AS n FROM (
+                   SELECT cpu_ms FROM runs WHERE trigger = 'cron' AND started_at > now() - interval '15 minutes') r"""
+        ).fetchone()
+        if row["n"] >= 5:
+            avg = float(row["avg"])
+            step = 5 if avg < CPU_TARGET_MS * 0.8 else -8 if avg > CPU_TARGET_MS * 1.15 else 0
+            st["limit"] = max(5, min(100, int(st["limit"]) + step))
+            st["avg_cpu_ms"] = round(avg)
+        st["at"] = now.isoformat()
+        set_meta(conn, "auto_budget", st)
+    return int(st["limit"])
 
 
 def source_ok(conn, source_id: int, *, job_count=None, etag=None, ids_hash=None, relevant_count=None,
@@ -569,6 +632,10 @@ def stats(conn) -> dict:
                   count(*) FILTER (WHERE origin = 'auto' AND enabled AND relevant_count > 0) AS auto_hiring,
                   count(*) FILTER (WHERE origin = 'auto' AND enabled AND NOT initialized) AS auto_unchecked,
                   count(*) FILTER (WHERE origin = 'auto' AND created_at > now() - interval '24 hours') AS auto_24h,
+                  -- a company hiring US engineers is checked about every this many minutes (2x the average wait)
+                  COALESCE(round(2 * avg(extract(epoch FROM now() - last_checked_at)) FILTER (
+                      WHERE origin = 'auto' AND enabled AND initialized AND relevant_count > 0) / 60), 0)::int
+                      AS auto_cycle_min,
                   count(*) FILTER (WHERE origin = 'manual') AS manual_sources
            FROM sources"""
     ).fetchone())

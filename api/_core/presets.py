@@ -43,7 +43,7 @@ DEFAULT_SETTINGS = {
     "ai_credit_set_on": "",       # set automatically when you change ai_credit_usd
     "auto_discover": True,        # add company boards found in feeds to the watch list
     "auto_interval_minutes": 15,  # discovered companies with US engineering openings: checked this often
-    "auto_idle_interval_minutes": 360,  # discovered companies without any: checked this often
+    "auto_idle_interval_minutes": 1440,  # discovered companies without any: checked this often
     "paused": False,
 }
 
@@ -51,7 +51,7 @@ DEFAULT_SETTINGS = {
 LINKEDIN_ENTRY_LEVELS = "2,3"
 
 # Bump when presets change; existing databases are migrated once (see db._migrate_presets).
-PRESET_VERSION = 4
+PRESET_VERSION = 5
 
 # Big tech and well-known tech companies you asked to watch (added as "Your companies", label
 # "Watchlist"). Each entry: (name, kind, config, check interval in minutes). The Greenhouse /
@@ -108,4 +108,7 @@ PRESET_SOURCES = [
     {"name": "Simplify: New Grad SWE + AI/ML", "kind": "simplify", "since_version": 4,
      "config": {"repo": "SimplifyJobs/New-Grad-Positions", "sections": "Software Engineering, Machine Learning"},
      "interval_minutes": 2},
+    # Every company on Workable: its cross-company search, with exact posting times.
+    {"name": "Workable: all companies (US)", "kind": "workable_search", "since_version": 5,
+     "config": {"queries": "engineer, developer", "location": "United States"}, "interval_minutes": 3},
 ]

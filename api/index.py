@@ -97,7 +97,7 @@ class SettingsIn(BaseModel):
     ai_credit_usd: float = Field(default=0.0, ge=0, le=100000)
     auto_discover: bool = True
     auto_interval_minutes: int = Field(default=15, ge=5, le=1440)
-    auto_idle_interval_minutes: int = Field(default=360, ge=30, le=10080)
+    auto_idle_interval_minutes: int = Field(default=1440, ge=30, le=10080)
     paused: bool = False
 
 
@@ -332,11 +332,7 @@ def save_settings(body: SettingsIn):
         if float(current.get("ai_credit_usd") or 0) != values["ai_credit_usd"]:
             values["ai_credit_set_on"] = datetime.now(timezone.utc).date().isoformat()
         # Apply a changed interval to companies that were already discovered, not just new ones.
-        conn.execute(
-            """UPDATE sources SET interval_minutes = CASE WHEN relevant_count = 0 THEN %(idle)s ELSE %(active)s END
-               WHERE origin = 'auto'""",
-            {"active": values["auto_interval_minutes"], "idle": values["auto_idle_interval_minutes"]},
-        )
+        db.retier_auto_sources(conn, values["auto_interval_minutes"], values["auto_idle_interval_minutes"])
         return db.save_settings(conn, values)
 
 

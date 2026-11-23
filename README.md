@@ -13,7 +13,9 @@ Everything runs on free tiers: **Vercel** (React dashboard + Python API), **Supa
 2. **Auto-discovery of companies you don't know** – the app watches company career pages directly (the Greenhouse / Lever / Ashby / Workday / Workable / SmartRecruiters feed behind the page), where jobs appear first. It finds those companies three ways:
    - **Links in job posts:** a feed post linking to a company's career page.
    - **Company names:** every company seen hiring engineers on LinkedIn or the feeds is looked up on the hiring platforms and its career page is watched from then on (about 2 lookups per minute).
-   - **Common Crawl web index:** thousands of company career pages listed in the public Common Crawl index are added a page at a time (one step every 10 minutes, retried automatically when the index is busy, refreshed monthly).
+   - **Common Crawl web index:** about 10,000 company career pages (Greenhouse, Ashby, Lever, SmartRecruiters and every Workday company) from the public Common Crawl index. The app reads the index files straight from Common Crawl's download site (its search server is often down), one block a minute, so a full crawl is loaded in about an hour and refreshed monthly.
+   - **Workable, all companies:** Workable's own cross-company search, checked every 3 minutes, returns new US engineering jobs from every company on Workable with exact posting times.
+   - **Free-tier CPU:** with thousands of companies, each run checks as many as Vercel's free CPU allows (self-tuning). Companies with 10+ US engineering openings are checked most often, 3–9 at 2×, 1–2 at 4×, none about daily; the dashboard shows how often a hiring company is actually checked.
 
    Companies with US Software/AI Engineer openings are checked every 15 minutes; the rest every 6 hours (both editable). Only jobs matching your filters are stored, so thousands of companies fit in the free database.
 3. **Your companies** – type a company name or paste a careers URL in the dashboard. These are checked every 2 minutes.

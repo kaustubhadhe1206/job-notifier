@@ -420,13 +420,13 @@ function SourcesTab({ sources, stats, seed, reload, notify }) {
   );
 }
 
-const SEED_HOSTS = ["Greenhouse", "Greenhouse", "Ashby", "Lever", "Workable", "SmartRecruiters"];
+const SEED_HOSTS = ["Greenhouse", "Greenhouse", "Ashby", "Lever", "SmartRecruiters", "Workday"];
 
 function DiscoveryStatus({ stats, seed }) {
   let seedText = "Starting soon";
   if (seed?.done_at) seedText = `Done (${(seed.added || 0).toLocaleString()} career pages added; refreshes monthly)`;
   else if (seed?.crawl) {
-    seedText = `Reading ${SEED_HOSTS[seed.host] || "job boards"} (${seed.host + 1} of 6), page ${seed.page + 1}` +
+    seedText = `Reading ${SEED_HOSTS[seed.host] || "job boards"} (${seed.host + 1} of 6), part ${seed.page + 1}` +
       (seed.pages ? ` of ${seed.pages}` : "") + ` · ${(seed.added || 0).toLocaleString()} career pages added`;
   }
   return (
@@ -434,7 +434,10 @@ function DiscoveryStatus({ stats, seed }) {
       <h3>Finding companies you don't know</h3>
       <div className="discovery-grid">
         <div><strong>{(stats.auto_active + stats.manual_sources).toLocaleString()}</strong><span>career pages watched</span></div>
-        <div><strong>{stats.auto_hiring.toLocaleString()}</strong><span>hiring US engineers (checked every 15 min)</span></div>
+        <div>
+          <strong>{stats.auto_hiring.toLocaleString()}</strong>
+          <span>hiring US engineers{stats.auto_cycle_min ? ` (each checked about every ${stats.auto_cycle_min} min)` : ""}</span>
+        </div>
         <div><strong>{stats.auto_unchecked.toLocaleString()}</strong><span>waiting for their first check</span></div>
         <div><strong>{stats.queue_waiting.toLocaleString()}</strong><span>names from LinkedIn/feeds to look up</span></div>
       </div>
@@ -837,7 +840,7 @@ function SettingsTab({ settings, setup, ai, reload, notify }) {
           max_years_experience: Number(form.max_years_experience) || 0,
           max_age_minutes: Number(form.max_age_minutes) || 60,
           auto_interval_minutes: Number(form.auto_interval_minutes) || 15,
-          auto_idle_interval_minutes: Number(form.auto_idle_interval_minutes) || 360,
+          auto_idle_interval_minutes: Number(form.auto_idle_interval_minutes) || 1440,
           ai_monthly_limit_usd: Number(form.ai_monthly_limit_usd) || 0,
           ai_credit_usd: Number(form.ai_credit_usd) || 0,
         },
@@ -965,7 +968,7 @@ function SettingsTab({ settings, setup, ai, reload, notify }) {
         <label className="check-field"><input type="checkbox" checked={form.auto_discover} onChange={set("auto_discover")} /> Automatically find and watch company career pages (from LinkedIn, the feeds and the Common Crawl web index)</label>
         <div className="grid-3">
           <label className="field">
-            <span>Companies hiring US engineers: check every (minutes)</span>
+            <span>Companies with 10+ US engineering openings: check every (minutes; 3–9 openings: 2×, 1–2: 4×)</span>
             <input type="number" min="5" max="1440" value={form.auto_interval_minutes} onChange={set("auto_interval_minutes")} />
           </label>
           <label className="field">

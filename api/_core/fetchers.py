@@ -227,6 +227,26 @@ def fetch_workable(c, cfg, ctx):
     return jobs
 
 
+def fetch_workable_search(c, cfg, ctx):
+    """Workable's cross-company job search (jobs.workable.com): new postings from every company on
+    Workable, including ones the app has never heard of, with exact posting times."""
+    jobs = []
+    for query in [q.strip() for q in str(cfg.get("queries") or "engineer, developer").split(",") if q.strip()]:
+        params = {"query": query, "location": cfg.get("location") or "United States", "day_range": "1"}
+        for _ in range(int(cfg.get("pages", 5))):
+            data = _get(c, "https://jobs.workable.com/api/v1/jobs", params=params, headers={"Accept": "application/json"}).json()
+            for j in data.get("jobs") or []:
+                locs = [x for x in j.get("locations") or [] if x and x != "TELECOMMUTE"]
+                loc = "; ".join(locs) + ("; Remote" if j.get("workplace") == "remote" else "")
+                desc = " ".join(j.get(k) or "" for k in ("description", "requirementsSection", "benefitsSection"))
+                jobs.append(Job(j["id"], j.get("title") or "", j.get("url") or "", loc.strip("; "),
+                                (j.get("company") or {}).get("title") or "", _dt(j.get("created")), description=desc))
+            if not data.get("nextPageToken"):
+                break
+            params["pageToken"] = data["nextPageToken"]
+    return jobs
+
+
 def fetch_smartrecruiters(c, cfg, ctx):
     company_id = cfg["company"]
     jobs, offset = [], 0
@@ -801,6 +821,7 @@ FETCHERS = {
     "weworkremotely": fetch_weworkremotely,
     "linkedin": fetch_linkedin,
     "simplify": fetch_simplify,
+    "workable_search": fetch_workable_search,
     "generic": fetch_generic,
 }
 
@@ -863,6 +884,8 @@ def public_url(kind: str, cfg: dict) -> str:
         "weworkremotely": lambda: "https://weworkremotely.com/categories/remote-programming-jobs",
         "linkedin": lambda: "https://www.linkedin.com/jobs/search/?" + str(httpx.QueryParams(_linkedin_params(cfg))),
         "simplify": lambda: f"https://github.com/{cfg.get('repo') or SIMPLIFY_REPO}",
+        "workable_search": lambda: "https://jobs.workable.com/search?" + str(httpx.QueryParams(
+            {"query": "software engineer", "location": cfg.get("location") or "United States", "day_range": "1"})),
         "generic": lambda: cfg["url"],
     }
     try:

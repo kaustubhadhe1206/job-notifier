@@ -52,6 +52,8 @@ def _channel(source: dict) -> str:
     jobboard    Hacker News, YC, RemoteOK, We Work Remotely, Himalayas"""
     if source["kind"] == "simplify":
         return "simplify"
+    if source["kind"] == "workable_search":
+        return "hidden"  # straight from companies' own Workable job pages, any company
     if source["origin"] == "manual" and (source["kind"] != "linkedin" or (source.get("config") or {}).get("company_ids")):
         return "watchlist"  # your companies, including a LinkedIn search limited to companies you picked
     if source["kind"] == "linkedin":
@@ -161,7 +163,8 @@ def run_check(trigger: str = "cron", force: bool = False, source_ids: list[int] 
 
     with db.connect() as conn:
         settings = db.get_settings(conn)
-        sources = db.claim_due_sources(conn, force=force, ids=source_ids, limit=MAX_SOURCES_PER_RUN)
+        sources = db.claim_due_sources(conn, force=force, ids=source_ids, limit=MAX_SOURCES_PER_RUN,
+                                       auto_limit=db.auto_check_budget(conn))
 
     with ThreadPoolExecutor(max_workers=FETCH_WORKERS) as pool:
         results = list(pool.map(fetch_source, sources))
@@ -173,7 +176,7 @@ def run_check(trigger: str = "cron", force: bool = False, source_ids: list[int] 
     names: dict[str, str] = {}
     candidates: list[tuple[int, dict, fetchers.Job]] = []  # (job row id, source, job)
     auto_interval = int(settings.get("auto_interval_minutes") or 15)
-    idle_interval = int(settings.get("auto_idle_interval_minutes") or 360)
+    idle_interval = int(settings.get("auto_idle_interval_minutes") or 1440)
 
     with db.connect() as conn:
         for source, res in zip(sources, results):
@@ -218,10 +221,10 @@ def run_check(trigger: str = "cron", force: bool = False, source_ids: list[int] 
                 })
             inserted = db.insert_jobs(conn, source["id"], rows)
 
-            # Companies with US engineering openings are checked often; others every few hours.
+            # Companies with more US engineering openings are checked more often (see db.tier_interval).
             interval = None
             if source["origin"] == "auto" and source["kind"] in fetchers.BOARD_KINDS:
-                interval = auto_interval if engineering else idle_interval
+                interval = db.tier_interval(len(engineering), auto_interval, idle_interval)
             db.source_ok(conn, source["id"], job_count=len(res.jobs), etag=res.etag, ids_hash=ids_hash,
                          relevant_count=len(engineering), interval_minutes=interval)
 

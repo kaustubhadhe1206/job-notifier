@@ -12,7 +12,8 @@ from urllib.parse import parse_qs, urlparse
 
 from . import fetchers
 
-SKIP_SLUGS = {"www", "app", "api", "cdn", "static", "assets", "careers", "jobs", "embed", "js", "v1", "sr-jobs"}
+SKIP_SLUGS = {"www", "app", "api", "cdn", "static", "assets", "careers", "jobs", "embed", "js", "v1", "sr-jobs",
+              "external-referrals"}
 
 # (kind, regex, config builder). More specific patterns first.
 PATTERNS = [
