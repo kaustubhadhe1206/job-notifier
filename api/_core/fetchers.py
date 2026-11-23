@@ -3,7 +3,8 @@
 Two families:
 * Company boards (Greenhouse, Lever, Ashby, Workday, ...): a company's own ATS feed. Jobs land
   here first, before LinkedIn and job boards, so these are watched every few minutes.
-* Discovery feeds (Hacker News, YC, RemoteOK, Himalayas, We Work Remotely, LinkedIn search):
+* Discovery feeds (Hacker News, YC, RemoteOK, Himalayas, We Work Remotely, LinkedIn search,
+  the SimplifyJobs new grad list):
   jobs from many small companies at once. Links to company boards found in these feeds are
   added to the watch list automatically (see checker.py).
 
@@ -19,7 +20,7 @@ import xml.etree.ElementTree as ET
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from email.utils import parsedate_to_datetime
-from urllib.parse import urljoin
+from urllib.parse import parse_qsl, urlencode, urljoin, urlsplit, urlunsplit
 
 import httpx
 from bs4 import BeautifulSoup
@@ -498,6 +499,52 @@ def fetch_weworkremotely(c, cfg, ctx):
     return jobs
 
 
+SIMPLIFY_REPO = "SimplifyJobs/New-Grad-Positions"
+_EMOJI = re.compile("[\U0001F000-\U0001FAFF☀-➿️‍]")
+_TRACKING_PARAMS = {"utm_source", "utm_medium", "utm_campaign", "ref", "embed", "source", "gh_src"}
+
+
+def _clean_apply_url(url: str) -> str:
+    """Drop Simplify's tracking parameters and a trailing '/apply' or '/application' (the application
+    form), so the link opens the posting itself."""
+    u = urlsplit(html.unescape(url))
+    query = [(k, v) for k, v in parse_qsl(u.query, keep_blank_values=True) if k.lower() not in _TRACKING_PARAMS]
+    path = re.sub(r"/(?:application|apply)/?$", "", u.path)
+    return urlunsplit((u.scheme, u.netloc, path, urlencode(query), ""))
+
+
+def fetch_simplify(c, cfg, ctx):
+    """SimplifyJobs' GitHub list of new grad roles (README tables, regenerated about every 30 min).
+    Only open roles posted today (Age '0d') are returned; the link is the table's 'Apply' button
+    (the company's own posting), whose description is read and checked like any other job."""
+    repo, branch = cfg.get("repo") or SIMPLIFY_REPO, cfg.get("branch") or "dev"
+    readme = _get(c, f"https://raw.githubusercontent.com/{repo}/{branch}/README.md", ctx,
+                  headers={"Accept": "text/plain"}).text
+    wanted = [s.strip().lower() for s in str(cfg.get("sections") or "Software Engineering").split(",") if s.strip()]
+    jobs = []
+    for heading, body in re.findall(r"^## ([^\n]+)\n(.*?)(?=^## |\Z)", readme, re.S | re.M):
+        if not any(w in heading.lower() for w in wanted):
+            continue
+        table = body.split("</table>", 1)[0]  # first table = open roles; closed ones sit in a <details> after it
+        company = ""
+        for row in re.findall(r"<tr>(.*?)</tr>", table, re.S):
+            cells = re.findall(r"<td>(.*?)</td>", row, re.S)
+            if len(cells) < 5:
+                continue
+            name = " ".join(_EMOJI.sub(" ", html.unescape(_strip_tags(cells[0]))).split())  # "🔥 Amazon" -> "Amazon"
+            company = company if name in ("", "↳") else name  # '↳' = same company as the row above
+            apply = re.search(r'<a href="([^"]+)"[^>]*>\s*<img[^>]*alt="Apply"', cells[3])
+            if _strip_tags(cells[4]) != "0d" or not apply:
+                continue
+            title = " ".join(_EMOJI.sub(" ", html.unescape(_strip_tags(cells[1]))).split())
+            loc = re.sub(r"<summary>.*?</summary>", "", cells[2], flags=re.S)
+            loc = "; ".join(p for p in (html.unescape(_strip_tags(x)) for x in re.split(r"</?br\s*/?>", loc)) if p)
+            url = _clean_apply_url(apply.group(1))
+            sid = re.search(r"simplify\.jobs/p/([0-9a-f-]{36})", cells[3])
+            jobs.append(Job(sid.group(1) if sid else url, title, url, loc, company[:100], None, text=url))
+    return jobs
+
+
 def fetch_linkedin(c, cfg, ctx):
     """LinkedIn's public (logged-out) job search, newest first, posted within the last hour.
 
@@ -589,30 +636,118 @@ def _strip_html(s: str) -> str:
     return " ".join(html.unescape(re.sub(r"<[^>]+>", " ", s)).split())[:40000]
 
 
+_JSON = {"Accept": "application/json"}
+
+
+def _greenhouse_description(c, board: str, job_id: str) -> str:
+    data = _get(c, f"https://boards-api.greenhouse.io/v1/boards/{board}/jobs/{job_id}").json()
+    return _strip_html(html.unescape(data.get("content") or ""))
+
+
+def _workable_description(c, account: str, shortcode: str) -> str:
+    d = _get(c, f"https://apply.workable.com/api/v2/accounts/{account}/jobs/{shortcode}").json()
+    return _strip_html(" ".join(d.get(k) or "" for k in ("description", "requirements", "benefits")))
+
+
+def _smartrecruiters_description(c, company: str, job_id: str) -> str:
+    d = _get(c, f"https://api.smartrecruiters.com/v1/companies/{company}/postings/{job_id}").json()
+    sections = ((d.get("jobAd") or {}).get("sections") or {}).values()
+    return _strip_html(" ".join(s.get("text") or "" for s in sections if isinstance(s, dict)))
+
+
+def _workday_description(c, cxs_url: str) -> str:
+    d = _get(c, cxs_url, headers=_JSON).json()
+    return _strip_html((d.get("jobPostingInfo") or {}).get("jobDescription") or "")
+
+
+def _json_ld_description(page: str) -> str:
+    """The description in a page's schema.org JobPosting data (most career sites include it for
+    Google Jobs, even when the visible page is drawn by JavaScript)."""
+    for raw in re.findall(r'<script[^>]+type="application/ld\+json"[^>]*>(.*?)</script>', page, re.S | re.I):
+        try:
+            data = json.loads(raw.strip())
+        except ValueError:
+            continue
+        for item in data if isinstance(data, list) else data.get("@graph") or [data]:
+            if isinstance(item, dict) and item.get("@type") == "JobPosting" and item.get("description"):
+                extra = " ".join(str(item.get(k) or "") for k in ("qualifications", "responsibilities",
+                                                                    "experienceRequirements", "educationRequirements"))
+                return _strip_html(html.unescape(f"{item['description']} {extra}"))
+    return ""
+
+
+def description_from_url(c, url: str) -> str:
+    """Full text of a posting from its link alone (e.g. Simplify's 'Apply' button). Links on a
+    known hiring platform are read through its public API; any other page through its JobPosting
+    data, or else its visible text."""
+    if m := re.search(r"(?:job-boards|boards)(?:\.eu)?\.greenhouse\.io/([\w-]+)/jobs/(\d+)", url):
+        return _greenhouse_description(c, m[1], m[2])
+    if m := re.search(r"greenhouse\.io/embed/job_app\?(?=.*\bfor=([\w-]+))(?=.*\btoken=(\d+))", url):
+        return _greenhouse_description(c, m[1], m[2])
+    if m := re.search(r"jobs\.(eu\.)?lever\.co/([\w.-]+)/([0-9a-f-]{36})", url):
+        j = _get(c, f"https://api.{m[1] or ''}lever.co/v0/postings/{m[2]}/{m[3]}").json()
+        lists = " ".join(f"{x.get('text', '')} {x.get('content', '')}" for x in j.get("lists") or [])
+        return _strip_html(f"{j.get('descriptionPlain') or ''} {lists} {j.get('additionalPlain') or ''}")
+    if m := re.search(r"jobs\.ashbyhq\.com/([^/?#]+)/([0-9a-f-]{36})", url):
+        data = _get(c, f"https://api.ashbyhq.com/posting-api/job-board/{m[1]}").json()
+        job = next((j for j in data.get("jobs", []) if j.get("id") == m[2]), None)
+        if job is None:
+            raise FetchError("Posting not found on the Ashby board")
+        return _strip_html(job.get("descriptionHtml") or job.get("descriptionPlain") or "")
+    if m := re.search(r"https://([\w-]+)\.(wd\d+)\.myworkdayjobs\.com/(?:[a-z]{2}-[A-Z]{2}/)?([\w-]+)(/job/[^?#]+)", url):
+        path = re.sub(r"/apply(?:/.*)?$", "", m[4])
+        return _workday_description(c, f"https://{m[1]}.{m[2]}.myworkdayjobs.com/wday/cxs/{m[1]}/{m[3]}{path}")
+    if m := re.search(r"https://(wd\d+\.myworkdaysite\.com)/(?:[a-z]{2}-[A-Z]{2}/)?recruiting/([\w-]+)/([\w-]+)(/job/[^?#]+)", url):
+        path = re.sub(r"/apply(?:/.*)?$", "", m[4])
+        return _workday_description(c, f"https://{m[1]}/wday/cxs/{m[2]}/{m[3]}{path}")
+    if m := re.search(r"(?:jobs|careers)\.smartrecruiters\.com/([\w-]+)/(\d+)", url):
+        return _smartrecruiters_description(c, m[1], m[2])
+    if m := re.search(r"apply\.workable\.com/([\w-]+)/j/(\w+)", url):
+        return _workable_description(c, m[1], m[2])
+    if m := re.search(r"https://([\w.-]+\.oraclecloud\.com)/hcmUI/CandidateExperience/[\w-]+/sites/([\w-]+)/job/(\d+)", url):
+        d = _get(c, f"https://{m[1]}/hcmRestApi/resources/latest/recruitingCEJobRequisitionDetails",
+                 params={"expand": "all", "onlyData": "true", "finder": f'ById;Id="{m[3]}",siteNumber={m[2]}'},
+                 headers=_JSON).json()
+        item = (d.get("items") or [{}])[0]
+        return _strip_html(" ".join(item.get(k) or "" for k in (
+            "ExternalDescriptionStr", "ExternalResponsibilitiesStr", "ExternalQualificationsStr", "CorporateDescriptionStr")))
+    if m := re.search(r"[?&]gh_jid=(\d+)", url):
+        # A Greenhouse job shown on the company's own site: the board is usually named after the
+        # domain (careers.roblox.com -> roblox), and its API works even where the site blocks bots.
+        label = (urlsplit(url).hostname or "").split(".")[-2:][0]
+        for board in dict.fromkeys([label, re.sub(r"careers?$", "", label)]):
+            try:
+                if text := _greenhouse_description(c, board, m[1]):
+                    return text
+            except httpx.HTTPStatusError:
+                continue
+    page = _get(c, url, headers={"Accept": "text/html"}).text
+    if m := re.search(r"CandidateOpportunityDetail\(", page):  # UKG / UltiPro: the posting is a JSON blob
+        try:
+            return _strip_html(json.JSONDecoder().raw_decode(page, m.end())[0].get("Description") or "")
+        except (ValueError, AttributeError):
+            pass
+    return _json_ld_description(page) or _strip_html(page)
+
+
 def fetch_description(kind: str, cfg: dict, job_id: str, url: str, c: httpx.Client | None = None) -> str:
     """Full plain-text description of one job. Used only for new jobs that already passed the
     title/location filters, so this stays a handful of requests per run."""
     c = c or client()
-    j = {"Accept": "application/json"}
     if kind == "greenhouse":
-        data = _get(c, f"https://boards-api.greenhouse.io/v1/boards/{cfg['board']}/jobs/{job_id}").json()
-        return _strip_html(html.unescape(data.get("content") or ""))
+        return _greenhouse_description(c, cfg["board"], job_id)
     if kind == "workable":
-        d = _get(c, f"https://apply.workable.com/api/v2/accounts/{cfg['account']}/jobs/{job_id}").json()
-        return _strip_html(" ".join(d.get(k) or "" for k in ("description", "requirements", "benefits")))
+        return _workable_description(c, cfg["account"], job_id)
     if kind == "smartrecruiters":
-        d = _get(c, f"https://api.smartrecruiters.com/v1/companies/{cfg['company']}/postings/{job_id}").json()
-        sections = ((d.get("jobAd") or {}).get("sections") or {}).values()
-        return _strip_html(" ".join(s.get("text") or "" for s in sections if isinstance(s, dict)))
+        return _smartrecruiters_description(c, cfg["company"], job_id)
     if kind == "workday":
-        d = _get(c, f"https://{cfg['host']}/wday/cxs/{cfg['tenant']}/{cfg['site']}{job_id}", headers=j).json()
-        return _strip_html((d.get("jobPostingInfo") or {}).get("jobDescription") or "")
+        return _workday_description(c, f"https://{cfg['host']}/wday/cxs/{cfg['tenant']}/{cfg['site']}{job_id}")
     if kind == "linkedin":
         r = _get(c, f"https://www.linkedin.com/jobs-guest/jobs/api/jobPosting/{job_id}", headers={"Accept": "text/html"})
         m = re.search(r'show-more-less-html__markup[^>]*>(.*?)</div>', r.text, re.S)
         return _strip_html(m.group(1) if m else "")
     if url.startswith("http") and "news.ycombinator.com" not in url:
-        return _strip_html(_get(c, url, headers={"Accept": "text/html"}).text)
+        return description_from_url(c, url)  # Simplify's Apply links, job board links, generic pages
     return ""
 
 
@@ -637,15 +772,17 @@ FETCHERS = {
     "himalayas": fetch_himalayas,
     "weworkremotely": fetch_weworkremotely,
     "linkedin": fetch_linkedin,
+    "simplify": fetch_simplify,
     "generic": fetch_generic,
 }
 
 BIG_TECH_KINDS = {"amazon", "apple", "google", "microsoft", "eightfold"}
 BOARD_KINDS = {"greenhouse", "lever", "ashby", "workable", "smartrecruiters", "recruitee", "workday"} | BIG_TECH_KINDS
 FEED_KINDS = set(FETCHERS) - BOARD_KINDS  # feeds are scanned for links to new company boards
-# Sources that list a company's own openings: a job that newly appears between two checks was
-# just posted, even when the site gives no exact posting time.
-OBSERVED_KINDS = BOARD_KINDS | {"generic"}
+# Sources whose new entries were just posted: a job that newly appears between two checks is
+# fresh, even when the site gives no exact posting time. The Simplify list counts too: it only
+# returns roles posted today, and a row is new the moment Simplify adds it.
+OBSERVED_KINDS = BOARD_KINDS | {"generic", "simplify"}
 
 REQUIRED_CONFIG = {
     "greenhouse": ["board"],
@@ -698,6 +835,7 @@ def public_url(kind: str, cfg: dict) -> str:
         "weworkremotely": lambda: "https://weworkremotely.com/categories/remote-programming-jobs",
         "linkedin": lambda: "https://www.linkedin.com/jobs/search/?" + str(httpx.QueryParams(
             {"keywords": cfg.get("keywords", ""), "location": cfg.get("location", ""), "f_TPR": "r3600", "sortBy": "DD"})),
+        "simplify": lambda: f"https://github.com/{cfg.get('repo') or SIMPLIFY_REPO}",
         "generic": lambda: cfg["url"],
     }
     try:

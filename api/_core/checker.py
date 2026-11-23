@@ -38,7 +38,7 @@ def fetch_source(source: dict) -> FetchResult:
         return FetchResult(error=fetchers.describe_error(e))
 
 
-CHANNEL_RANK = {"hidden_new": 0, "hidden": 1, "watchlist": 2, "jobboard": 3, "linkedin": 4}
+CHANNEL_RANK = {"hidden_new": 0, "hidden": 1, "watchlist": 2, "simplify": 3, "jobboard": 4, "linkedin": 5}
 
 
 def _channel(source: dict) -> str:
@@ -46,8 +46,11 @@ def _channel(source: dict) -> str:
     hidden      a discovered company's own career page (usually before LinkedIn has it)
     hidden_new  same, and that company had no US engineering openings until now
     watchlist   a company you added yourself
+    simplify    the SimplifyJobs new grad list on GitHub
     linkedin    LinkedIn search
     jobboard    Hacker News, YC, RemoteOK, We Work Remotely, Himalayas"""
+    if source["kind"] == "simplify":
+        return "simplify"
     if source["origin"] == "manual" and (source["kind"] != "linkedin" or (source.get("config") or {}).get("company_ids")):
         return "watchlist"  # your companies, including a LinkedIn search limited to companies you picked
     if source["kind"] == "linkedin":

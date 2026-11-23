@@ -355,6 +355,7 @@ const CHANNELS = {
   hidden_new: ["Hidden · first opening", "Found on a company's own career page; the company had no US engineering openings until now"],
   hidden: ["Hidden", "Found on a discovered company's own career page, usually before LinkedIn"],
   watchlist: ["Watchlist", "A company you added"],
+  simplify: ["Simplify", "From the SimplifyJobs new grad list on GitHub (posted today)"],
   linkedin: ["LinkedIn", "Found through LinkedIn search"],
   jobboard: ["Job board", "Hacker News, YC, RemoteOK, We Work Remotely or Himalayas"],
 };

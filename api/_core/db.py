@@ -70,7 +70,7 @@ ALTER TABLE jobs ADD COLUMN IF NOT EXISTS checks INT NOT NULL DEFAULT 0;   -- at
 ALTER TABLE jobs ADD COLUMN IF NOT EXISTS checked_at TIMESTAMPTZ;
 CREATE INDEX IF NOT EXISTS jobs_visa_pending_idx ON jobs (first_seen_at) WHERE visa = 'pending';
 ALTER TABLE jobs ADD COLUMN IF NOT EXISTS sheet_synced BOOLEAN NOT NULL DEFAULT FALSE;
--- where the job was found: hidden | hidden_new | watchlist | linkedin | jobboard
+-- where the job was found: hidden | hidden_new | watchlist | simplify | linkedin | jobboard
 ALTER TABLE jobs ADD COLUMN IF NOT EXISTS channel TEXT;
 CREATE INDEX IF NOT EXISTS jobs_sheet_pending_idx ON jobs (first_seen_at) WHERE matched AND NOT sheet_synced;
 CREATE INDEX IF NOT EXISTS jobs_first_seen_idx ON jobs (first_seen_at DESC);

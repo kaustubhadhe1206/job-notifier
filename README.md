@@ -9,6 +9,7 @@ Everything runs on free tiers: **Vercel** (React dashboard + Python API), **Supa
 ## How it finds jobs
 
 1. **Discovery feeds** – Hacker News "Who is hiring", Y Combinator startup job posts, RemoteOK, Himalayas, We Work Remotely, plus LinkedIn searches for "Software Engineer" and "AI Engineer" in the United States. These are full of small companies.
+   - **Simplify** – the [SimplifyJobs New Grad list](https://github.com/SimplifyJobs/New-Grad-Positions) (Software Engineering and Data Science, AI & Machine Learning sections), checked every 2 minutes. Only roles posted today (Age "0d") count. The app opens each row's **Apply** link, reads the actual posting (through the Greenhouse / Lever / Ashby / Workday / Oracle / SmartRecruiters / Workable APIs, or the page itself), and runs the same eligibility rules and AI check as every other job; the list's legend emojis are ignored. These jobs are labeled **Simplify**.
 2. **Auto-discovery of companies you don't know** – the app watches company career pages directly (the Greenhouse / Lever / Ashby / Workday / Workable / SmartRecruiters feed behind the page), where jobs appear first. It finds those companies three ways:
    - **Links in job posts:** a feed post linking to a company's career page.
    - **Company names:** every company seen hiring engineers on LinkedIn or the feeds is looked up on the hiring platforms and its career page is watched from then on (about 2 lookups per minute).

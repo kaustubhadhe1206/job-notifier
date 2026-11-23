@@ -51,7 +51,7 @@ DEFAULT_SETTINGS = {
 LINKEDIN_ENTRY_LEVELS = "2,3"
 
 # Bump when presets change; existing databases are migrated once (see db._migrate_presets).
-PRESET_VERSION = 3
+PRESET_VERSION = 4
 
 # Big tech and well-known tech companies you asked to watch (added as "Your companies", label
 # "Watchlist"). Each entry: (name, kind, config, check interval in minutes). The Greenhouse /
@@ -104,4 +104,8 @@ PRESET_SOURCES = [
     {"name": "LinkedIn: New Grad Engineer · United States", "kind": "linkedin", "since_version": 2,
      "config": {"keywords": "new grad engineer", "location": "United States", "experience": LINKEDIN_ENTRY_LEVELS},
      "interval_minutes": 15},
+    # Only roles with Age "0d"; each one's Apply link is opened and its description checked.
+    {"name": "Simplify: New Grad SWE + AI/ML", "kind": "simplify", "since_version": 4,
+     "config": {"repo": "SimplifyJobs/New-Grad-Positions", "sections": "Software Engineering, Machine Learning"},
+     "interval_minutes": 2},
 ]

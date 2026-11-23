@@ -24,6 +24,7 @@ CHANNEL_TEXT = {
     "hidden_new": "Hidden (first opening)",
     "hidden": "Hidden",
     "watchlist": "Watchlist",
+    "simplify": "Simplify",
     "linkedin": "LinkedIn",
     "jobboard": "Job board",
 }

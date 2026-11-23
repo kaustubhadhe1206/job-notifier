@@ -58,6 +58,7 @@ CHANNEL_LABELS = {
     "hidden_new": ("Hidden · first opening", "#6d28d9", "#ede9fe"),
     "hidden": ("Hidden", "#6d28d9", "#ede9fe"),
     "watchlist": ("Watchlist", "#b45309", "#fef3c7"),
+    "simplify": ("Simplify", "#047857", "#d1fae5"),
     "linkedin": ("LinkedIn", "#0a66c2", "#e8f1fb"),
     "jobboard": ("Job board", "#374151", "#f3f4f6"),
 }
