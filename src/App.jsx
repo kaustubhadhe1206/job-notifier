@@ -317,6 +317,7 @@ function JobsTab({ refreshKey }) {
             <li key={j.id} className="job">
               <div className="job-main">
                 <ChannelBadge channel={j.channel} />
+                <TagBadges tags={j.tags} />
                 <a href={j.url} target="_blank" rel="noreferrer" className="job-title">{j.title}</a>
                 <div className="job-meta">
                   <strong>{j.company}</strong>
@@ -368,6 +369,20 @@ function ChannelBadge({ channel }) {
   if (!CHANNELS[channel]) return null;
   const [label, title] = CHANNELS[channel];
   return <span className={`channel ch-${channel.replace("_new", "")}`} title={title}>{label}</span>;
+}
+
+const TAGS = {
+  easy_apply: ["Easy Apply", "Applied on LinkedIn (Easy Apply), not on the company's own site"],
+  recruiter: ["Recruiter / job site", "Posted by a staffing agency or job site, not the hiring company (AI check)"],
+};
+
+function TagBadges({ tags }) {
+  return (tags || "")
+    .split(",")
+    .filter((t) => TAGS[t])
+    .map((t) => (
+      <span key={t} className="channel ch-tag" title={TAGS[t][1]}>{TAGS[t][0]}</span>
+    ));
 }
 
 function VisaBadge({ visa }) {

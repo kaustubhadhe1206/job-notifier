@@ -152,6 +152,8 @@ def evaluate_jobs(items: list[tuple[dict, fetchers.Job]], settings: dict,
         else:
             verdicts.append(eligibility.evaluate(job.title, job.company or source["name"], text, settings,
                                                  loose=job.loose))
+        if (m := fetchers.LINKEDIN_APPLY.match(text)) and m[1] == "Easy Apply":
+            verdicts[-1].tags.append("easy_apply")
 
     if ai_usage is not None:
         to_check = [i for i, v in enumerate(verdicts) if v.ok and reads[i][0]][:llm_check.MAX_CALLS_PER_RUN]
@@ -202,7 +204,7 @@ def run_check(trigger: str = "cron", force: bool = False, source_ids: list[int] 
     with db.connect() as conn:
         for source, res in zip(sources, results):
             if res.error:
-                db.source_error(conn, source["id"], res.error)
+                db.source_error(conn, source["id"], res.error, retry_soon=source["kind"] == "linkedin")
                 summary["errors"].append({"source": source["name"], "error": res.error})
                 continue
             ids_hash = _ids_hash(res.jobs) if res.jobs is not None else None
@@ -295,7 +297,8 @@ def run_check(trigger: str = "cron", force: bool = False, source_ids: list[int] 
         if work:
             ai_usage = ai_usage_for_run(conn, settings)
             verdicts = evaluate_jobs([(s, j) for _, s, j, _ in work], settings, [n for *_, n in work], ai_usage)
-            db.set_eligibility(conn, [{"id": jid, "matched": v.ok, "visa": v.visa, "note": v.note, "checks": n}
+            db.set_eligibility(conn, [{"id": jid, "matched": v.ok, "visa": v.visa, "note": v.note, "checks": n,
+                                       "tags": ",".join(v.tags) or None}
                                       for (jid, _, _, n), v in zip(work, verdicts)])
             if ai_usage and ai_usage.calls:
                 db.record_ai_usage(conn, ai_usage)
@@ -318,9 +321,11 @@ def run_check(trigger: str = "cron", force: bool = False, source_ids: list[int] 
             if pending:
                 # The same opening often shows up on LinkedIn and on the company board: send it once.
                 unique = _dedupe(pending)
-                # Hidden jobs first, then by sponsorship evidence.
+                # Hidden jobs first; then company-site applications before Easy Apply / recruiter posts;
+                # then by sponsorship evidence.
                 rank = {"stated": 0, "listed": 1, "history": 2}
-                unique.sort(key=lambda j: (CHANNEL_RANK.get(j.get("channel"), 5), rank.get(j.get("visa"), 3)))
+                unique.sort(key=lambda j: (CHANNEL_RANK.get(j.get("channel"), 5), bool(j.get("tags")),
+                                           rank.get(j.get("visa"), 3)))
                 try:
                     notifier.send_jobs_email(notifier.recipient(settings), unique, os.environ.get("APP_URL", ""))
                     summary["emailed"] = len(unique)

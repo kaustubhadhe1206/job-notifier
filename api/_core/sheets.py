@@ -11,6 +11,7 @@ from datetime import datetime
 import httpx
 
 from . import fetchers
+from .notifier import tag_labels
 
 SPONSORSHIP_TEXT = {
     "stated": "Sponsors visas (in posting)",
@@ -74,7 +75,8 @@ def append_jobs(jobs: list[dict]) -> dict:
         "sponsorship": SPONSORSHIP_TEXT.get(j.get("visa") or "", ""),
         "details": j.get("note") or "",
         # "Hidden · Ashby" etc. (kept in the Source column so existing sheets need no script update)
-        "source": " · ".join(x for x in [CHANNEL_TEXT.get(j.get("channel") or "", ""), j.get("source_name") or ""] if x),
+        "source": " · ".join(x for x in [CHANNEL_TEXT.get(j.get("channel") or "", ""), *tag_labels(j.get("tags")),
+                                         j.get("source_name") or ""] if x),
         "posted_at": _iso(j.get("posted_at")),
     } for j in jobs]
     return _call({"action": "append", "jobs": rows})

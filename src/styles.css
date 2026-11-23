@@ -170,6 +170,7 @@ select { padding: 6px 8px; font-size: 13px; }
 .ch-linkedin { color: #0a66c2; background: #e8f1fb; }
 .ch-simplify { color: #047857; background: #d1fae5; }
 .ch-jobboard { color: var(--muted); background: var(--surface-2); }
+.ch-tag { color: var(--muted); background: transparent; border: 1px solid var(--border); padding: 0 7px; }
 @media (prefers-color-scheme: dark) {
   .ch-hidden { color: #c4b5fd; background: #2e1f57; }
   .ch-watchlist { color: #fcd34d; background: #3a2a0a; }

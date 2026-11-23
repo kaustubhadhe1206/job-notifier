@@ -697,6 +697,8 @@ def _smartrecruiters_description(c, company: str, job_id: str) -> str:
 
 
 WORKDAY_LOCATIONS = re.compile(r"^Workday locations: (.*?) \|\| ")
+# LinkedIn job pages say how you apply: on LinkedIn ("Easy Apply") or on the company's own site.
+LINKEDIN_APPLY = re.compile(r"^LinkedIn apply: (Easy Apply|company site) \|\| ")
 
 
 def _workday_description(c, cxs_url: str) -> str:
@@ -793,7 +795,10 @@ def fetch_description(kind: str, cfg: dict, job_id: str, url: str, c: httpx.Clie
     if kind == "linkedin":
         r = _get(c, f"https://www.linkedin.com/jobs-guest/jobs/api/jobPosting/{job_id}", headers={"Accept": "text/html"})
         m = re.search(r'show-more-less-html__markup[^>]*>(.*?)</div>', r.text, re.S)
-        return _strip_html(m.group(1) if m else "")
+        # apply-link-offsite = "Apply" on the company's site; apply-link-(simple_)onsite = Easy Apply
+        how = ("company site" if "apply-link-offsite" in r.text
+               else "Easy Apply" if re.search(r"apply-link-(?:simple_)?onsite", r.text) else "")
+        return (f"LinkedIn apply: {how} || " if how else "") + _strip_html(m.group(1) if m else "")
     if url.startswith("http") and "news.ycombinator.com" not in url:
         return description_from_url(c, url)  # Simplify's Apply links, job board links, generic pages
     return ""

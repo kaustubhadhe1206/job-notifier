@@ -40,6 +40,7 @@ is "not_mentioned".
 - min_years_required: the minimum years of professional experience the posting REQUIRES for this role \
 (e.g. "4+ years developing ..." -> 4, "3-5 years" -> 3). Ignore years listed only as preferred / nice to \
 have. Use -1 if no number of years is required.
+- posted_by_recruiter: true if the poster is not the employer: a staffing / recruiting agency, an IT consultancy placing people at a client ("our client", "on behalf of", C2C / W2 contract via a vendor), or a job board / aggregator reposting another company's job. false if the hiring company posts its own job.
 - evidence: the exact sentence(s) supporting any restriction or sponsorship statement, at most 300 \
 characters; empty string if there is none."""
 
@@ -50,9 +51,11 @@ SCHEMA = {
         "clearance_required": {"type": "boolean"},
         "sponsorship": {"type": "string", "enum": ["will_sponsor", "will_not_sponsor", "not_mentioned"]},
         "min_years_required": {"type": "integer"},
+        "posted_by_recruiter": {"type": "boolean"},
         "evidence": {"type": "string"},
     },
-    "required": ["citizenship_required", "clearance_required", "sponsorship", "min_years_required", "evidence"],
+    "required": ["citizenship_required", "clearance_required", "sponsorship", "min_years_required",
+                 "posted_by_recruiter", "evidence"],
     "additionalProperties": False,
 }
 

@@ -69,6 +69,8 @@ ALTER TABLE jobs ADD COLUMN IF NOT EXISTS visa TEXT;   -- stated | history | lis
 ALTER TABLE jobs ADD COLUMN IF NOT EXISTS note TEXT;   -- why it was (not) emailed
 ALTER TABLE jobs ADD COLUMN IF NOT EXISTS checks INT NOT NULL DEFAULT 0;   -- attempts to read the description
 ALTER TABLE jobs ADD COLUMN IF NOT EXISTS checked_at TIMESTAMPTZ;
+-- labels that don't block a job, comma-separated: easy_apply (LinkedIn Easy Apply), recruiter (staffing agency / job site)
+ALTER TABLE jobs ADD COLUMN IF NOT EXISTS tags TEXT;
 CREATE INDEX IF NOT EXISTS jobs_visa_pending_idx ON jobs (first_seen_at) WHERE visa = 'pending';
 ALTER TABLE jobs ADD COLUMN IF NOT EXISTS sheet_synced BOOLEAN NOT NULL DEFAULT FALSE;
 -- where the job was found: hidden | hidden_new | watchlist | simplify | linkedin | jobboard
@@ -110,7 +112,7 @@ SOURCE_COLS = """s.id, s.name, s.kind, s.config, s.url, s.origin, s.board_key, s
     s.last_job_count, s.relevant_count, s.created_at"""
 
 JOB_COLS = """j.id, j.title, COALESCE(NULLIF(j.company, ''), s.name) AS company, j.location, j.url,
-    j.posted_at, j.first_seen_at, j.baseline, j.matched, j.notified, j.notified_at, j.visa, j.note, j.channel,
+    j.posted_at, j.first_seen_at, j.baseline, j.matched, j.notified, j.notified_at, j.visa, j.note, j.channel, j.tags,
     s.name AS source_name, s.kind AS source_kind, s.origin AS source_origin"""
 
 AUTO_DISABLE_AFTER_ERRORS = 5
@@ -457,16 +459,21 @@ def finish_companies(conn, results: dict[str, str]) -> None:
         )
 
 
-def source_error(conn, source_id: int, error: str) -> None:
+def source_error(conn, source_id: int, error: str, retry_soon: bool = False) -> None:
     """Auto-discovered boards are switched off after repeated errors, or right away if the very
-    first check says the board doesn't exist (common for old Common Crawl entries)."""
+    first check says the board doesn't exist (common for old Common Crawl entries).
+    retry_soon: check again in about a minute instead of a full interval (LinkedIn rate limits
+    pass quickly, and waiting 10 minutes let jobs pile up and arrive an hour old)."""
     gone = "HTTP 404" in error
     conn.execute(
         """UPDATE sources SET last_error = %s, error_count = error_count + 1,
                enabled = CASE WHEN origin = 'auto' AND (error_count + 1 >= %s OR (%s AND NOT initialized))
-                              THEN FALSE ELSE enabled END
+                              THEN FALSE ELSE enabled END,
+               last_checked_at = CASE WHEN %s AND error_count < 10
+                                      THEN now() - make_interval(mins => interval_minutes) + interval '40 seconds'
+                                      ELSE last_checked_at END
            WHERE id = %s""",
-        (error[:500], AUTO_DISABLE_AFTER_ERRORS, gone, source_id),
+        (error[:500], AUTO_DISABLE_AFTER_ERRORS, gone, retry_soon, source_id),
     )
 
 
@@ -492,12 +499,13 @@ def insert_jobs(conn, source_id: int, rows: list[dict]) -> list[dict]:
 
 
 def set_eligibility(conn, verdicts: list[dict]) -> None:
-    """verdicts: [{id, matched, visa, note, checks}] — decision after reading descriptions."""
+    """verdicts: [{id, matched, visa, note, checks, tags?}] — decision after reading descriptions."""
     if verdicts:
         conn.execute(
             """UPDATE jobs j SET matched = r.matched, visa = r.visa, note = r.note, checks = r.checks,
-                   checked_at = now()
-               FROM jsonb_to_recordset(%s) AS r(id bigint, matched boolean, visa text, note text, checks int)
+                   tags = r.tags, checked_at = now()
+               FROM jsonb_to_recordset(%s) AS r(id bigint, matched boolean, visa text, note text, checks int,
+                                                tags text)
                WHERE j.id = r.id""",
             (Jsonb(verdicts),),
         )

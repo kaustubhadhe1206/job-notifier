@@ -18,7 +18,7 @@ import json
 import os
 import re
 import threading
-from dataclasses import dataclass
+from dataclasses import dataclass, field, replace
 
 DATA_PATH = os.path.join(os.path.dirname(__file__), "data", "h1b_sponsors.json.gz")
 
@@ -263,30 +263,34 @@ class Verdict:
     ok: bool     # email it?
     visa: str    # stated | history | listed | unknown | blocked | off
     note: str    # short human explanation shown in the email and dashboard
+    tags: list = field(default_factory=list)  # labels only, never block: easy_apply | recruiter
 
 
 def apply_ai(verdict: Verdict, facts: dict, settings: dict) -> Verdict:
     """Combine the rule verdict with Claude Haiku's reading of the posting. The AI can only add
     restrictions (or confirm sponsorship); it never overrides a rule that already blocked a job."""
+    if facts.get("posted_by_recruiter") and "recruiter" not in verdict.tags:
+        verdict = replace(verdict, tags=[*verdict.tags, "recruiter"])
     if not verdict.ok:
         return verdict
+    tags = verdict.tags
     quote = (facts.get("evidence") or "").strip()
     quote = f": “{quote[:300]}”" if quote else ""
     if settings.get("skip_ineligible", True):
         if facts.get("citizenship_required"):
-            return Verdict(False, "blocked", f"AI check: US citizens / green card / US persons only{quote}")
+            return Verdict(False, "blocked", f"AI check: US citizens / green card / US persons only{quote}", tags)
         if facts.get("clearance_required"):
-            return Verdict(False, "blocked", f"AI check: needs a security clearance or federal background check{quote}")
+            return Verdict(False, "blocked", f"AI check: needs a security clearance or federal background check{quote}", tags)
         if facts.get("sponsorship") == "will_not_sponsor" and (settings.get("visa_mode") or "allow_unknown") != "off":
-            return Verdict(False, "blocked", f"AI check: says no visa sponsorship{quote}")
+            return Verdict(False, "blocked", f"AI check: says no visa sponsorship{quote}", tags)
     max_years = int(settings.get("max_years_experience") or 0)
     years = facts.get("min_years_required")
     if max_years > 0 and isinstance(years, int) and years > max_years:
-        return Verdict(False, "blocked", f"AI check: asks for {years}+ years of experience{quote}")
+        return Verdict(False, "blocked", f"AI check: asks for {years}+ years of experience{quote}", tags)
     if facts.get("sponsorship") == "will_sponsor" and verdict.visa in ("unknown", "history", "listed"):
-        return Verdict(True, "stated", f"AI check: posting says it sponsors visas{quote}")
+        return Verdict(True, "stated", f"AI check: posting says it sponsors visas{quote}", tags)
     suffix = " (AI-checked)" if not facts.get("truncated") else " (AI-checked first 30,000 characters)"
-    return Verdict(verdict.ok, verdict.visa, (verdict.note + suffix) if verdict.note else suffix.strip(" ()"))
+    return Verdict(verdict.ok, verdict.visa, (verdict.note + suffix) if verdict.note else suffix.strip(" ()"), tags)
 
 
 def evaluate(title: str, company: str, description: str, settings: dict, loose: bool = False) -> Verdict:

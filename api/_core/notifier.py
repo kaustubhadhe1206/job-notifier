@@ -64,6 +64,14 @@ CHANNEL_LABELS = {
 }
 
 
+# Labels that don't block a job (jobs.tags)
+TAG_LABELS = {"easy_apply": "Easy Apply", "recruiter": "Recruiter / job site"}
+
+
+def tag_labels(tags: str | None) -> list[str]:
+    return [TAG_LABELS[t] for t in (tags or "").split(",") if t in TAG_LABELS]
+
+
 def _ago(dt: datetime | None) -> str:
     if not dt:
         return ""
@@ -92,13 +100,19 @@ def send_jobs_email(to: str, jobs: list[dict], app_url: str = "") -> None:
         label, color = VISA_LABELS.get(j.get("visa") or "", ("", "#4b5563"))
         visa_line = f"{label} {j.get('note') or ''}".strip() if label else ""
         ch_label, ch_fg, ch_bg = CHANNEL_LABELS.get(j.get("channel") or "", ("", "", ""))
-        text_lines.append(f"- {'[' + ch_label + '] ' if ch_label else ''}{j['title']}\n  {meta}\n  "
+        tags = tag_labels(j.get("tags"))
+        prefix = "".join(f"[{x}] " for x in [ch_label, *tags] if x)
+        text_lines.append(f"- {prefix}{j['title']}\n  {meta}\n  "
                           f"{visa_line + chr(10) + '  ' if visa_line else ''}{j.get('url') or ''}")
         visa_html = (f'<div style="margin-top:4px;font-size:13px;color:{color}"><strong>{escape(label)}</strong> '
                      f'<span style="color:#6b7280">{escape(j.get("note") or "")}</span></div>') if label else ""
         badge = (f'<span style="display:inline-block;font-size:11px;font-weight:700;color:{ch_fg};background:{ch_bg};'
                  f'padding:2px 8px;border-radius:99px;margin-bottom:6px;text-transform:uppercase;letter-spacing:.04em">'
-                 f'{escape(ch_label)}</span><br>') if ch_label else ""
+                 f'{escape(ch_label)}</span>') if ch_label else ""
+        badge += "".join(
+            f'<span style="display:inline-block;font-size:11px;font-weight:600;color:#6b7280;border:1px solid #d1d5db;'
+            f'padding:1px 7px;border-radius:99px;margin:0 0 6px 6px">{escape(t)}</span>' for t in tags)
+        badge += "<br>" if badge else ""
         rows.append(
             f"""<tr><td style="padding:14px 16px;border-bottom:1px solid #e5e7eb">
               {badge}<a href="{escape(j.get('url') or '#', quote=True)}"
