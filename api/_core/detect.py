@@ -75,7 +75,16 @@ def _linkedin_from_url(url: str):
     cfg = {"keywords": first("keywords"), "location": first("location"), "remote": "2" in first("f_WT").split(",")}
     if first("geoId"):
         cfg["geo_id"] = first("geoId")
-    return ("linkedin", cfg) if cfg["keywords"] or cfg["location"] else None
+    if first("f_E"):
+        cfg["experience"] = first("f_E")
+    if first("f_C"):
+        cfg["company_ids"] = first("f_C")
+    # Keep every other filter of your search (job titles f_T, job type f_JT, function f_F, ...).
+    # The time filter (f_TPR) is dropped: the app always searches the past hour.
+    filters = {k: v[0] for k, v in q.items() if k.startswith("f_") and k not in ("f_TPR", "f_E", "f_C") and v[0]}
+    if filters:
+        cfg["filters"] = filters
+    return ("linkedin", cfg) if cfg["keywords"] or cfg["location"] or cfg.get("geo_id") or filters else None
 
 
 def name_for(kind: str, cfg: dict, url: str = "") -> str:

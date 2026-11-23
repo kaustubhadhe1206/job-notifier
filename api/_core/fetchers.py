@@ -552,6 +552,27 @@ def fetch_simplify(c, cfg, ctx):
     return jobs
 
 
+LINKEDIN_MAX_WINDOW = 3600  # never look further back than one hour
+
+
+def _linkedin_params(cfg: dict) -> dict:
+    """Search parameters: any LinkedIn filters copied from a pasted search URL (job titles,
+    experience level, job type, ...), then this source's own settings. The time window is always
+    capped at the past hour, whatever the pasted URL said."""
+    params = {k: str(v) for k, v in (cfg.get("filters") or {}).items() if k.startswith("f_") and k != "f_TPR"}
+    params.update({"keywords": cfg.get("keywords", ""), "location": cfg.get("location", ""), "sortBy": "DD",
+                   "f_TPR": f"r{min(int(cfg.get('within_seconds') or LINKEDIN_MAX_WINDOW), LINKEDIN_MAX_WINDOW)}"})
+    if cfg.get("geo_id"):
+        params["geoId"] = cfg["geo_id"]
+    if cfg.get("remote") and "f_WT" not in params:
+        params["f_WT"] = "2"
+    if cfg.get("experience"):
+        params["f_E"] = cfg["experience"]  # LinkedIn experience levels, e.g. "2,3" = entry level + associate
+    if cfg.get("company_ids"):
+        params["f_C"] = cfg["company_ids"]  # only these companies (LinkedIn company ids, comma separated)
+    return params
+
+
 def fetch_linkedin(c, cfg, ctx):
     """LinkedIn's public (logged-out) job search, newest first, posted within the last hour.
 
@@ -562,17 +583,10 @@ def fetch_linkedin(c, cfg, ctx):
     best-effort: keep the interval at 10+ minutes.
     """
     jobs = []
-    for page in range(int(cfg.get("pages", 3))):
-        params = {"keywords": cfg.get("keywords", ""), "location": cfg.get("location", ""),
-                  "f_TPR": f"r{int(cfg.get('within_seconds', 3600))}", "sortBy": "DD", "start": page * 10}
-        if cfg.get("geo_id"):
-            params["geoId"] = cfg["geo_id"]
-        if cfg.get("remote"):
-            params["f_WT"] = "2"
-        if cfg.get("experience"):
-            params["f_E"] = cfg["experience"]  # LinkedIn experience levels, e.g. "2,3" = entry level + associate
-        if cfg.get("company_ids"):
-            params["f_C"] = cfg["company_ids"]  # only these companies (LinkedIn company ids, comma separated)
+    # 5 pages = the newest 50 results. A busy search (entry-level "software engineer" in the US)
+    # gets about 60 new jobs an hour, so 30 per check could miss some.
+    for page in range(int(cfg.get("pages", 5))):
+        params = {**_linkedin_params(cfg), "start": page * 10}
         r = c.get("https://www.linkedin.com/jobs-guest/jobs/api/seeMoreJobPostings/search", params=params,
                   headers={"Accept": "text/html", "Accept-Language": "en-US,en;q=0.9"})
         if r.status_code == 429:
@@ -840,8 +854,7 @@ def public_url(kind: str, cfg: dict) -> str:
         "remoteok": lambda: "https://remoteok.com/remote-dev-jobs",
         "himalayas": lambda: "https://himalayas.app/jobs",
         "weworkremotely": lambda: "https://weworkremotely.com/categories/remote-programming-jobs",
-        "linkedin": lambda: "https://www.linkedin.com/jobs/search/?" + str(httpx.QueryParams(
-            {"keywords": cfg.get("keywords", ""), "location": cfg.get("location", ""), "f_TPR": "r3600", "sortBy": "DD"})),
+        "linkedin": lambda: "https://www.linkedin.com/jobs/search/?" + str(httpx.QueryParams(_linkedin_params(cfg))),
         "simplify": lambda: f"https://github.com/{cfg.get('repo') or SIMPLIFY_REPO}",
         "generic": lambda: cfg["url"],
     }
@@ -857,7 +870,7 @@ def validate(kind: str, cfg: dict) -> None:
     missing = [k for k in REQUIRED_CONFIG.get(kind, []) if not str(cfg.get(k, "")).strip()]
     if missing:
         raise ValueError(f"Missing config for {kind}: {', '.join(missing)}")
-    if kind == "linkedin" and not (cfg.get("keywords") or cfg.get("location")):
+    if kind == "linkedin" and not (cfg.get("keywords") or cfg.get("location") or cfg.get("geo_id") or cfg.get("filters")):
         raise ValueError("LinkedIn search needs keywords or a location")
 
 
