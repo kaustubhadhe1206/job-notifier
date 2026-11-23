@@ -10,7 +10,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 
 from . import db, detect, discovery, eligibility, fetchers, llm_check, notifier, seeder, sheets
-from .filters import Filters
+from .filters import MULTI_LOCATION_RE, Filters, is_us_location
 
 MAX_SOURCES_PER_RUN = 100  # a run checks at most this many sources (mostly cheap "not modified" replies)
 FETCH_WORKERS = 20
@@ -122,6 +122,10 @@ def evaluate_jobs(items: list[tuple[dict, fetchers.Job]], settings: dict,
         if failed and attempt < MAX_READ_ATTEMPTS:
             verdicts.append(eligibility.Verdict(
                 False, "pending", f"Couldn't read the description yet (try {attempt} of {MAX_READ_ATTEMPTS}); retrying shortly"))
+        elif (settings.get("us_only", True) and MULTI_LOCATION_RE.match(job.location or "")
+              and (m := fetchers.WORKDAY_LOCATIONS.match(text)) and not is_us_location(m[1])):
+            # Workday lists "2 Locations"; the posting itself says where (e.g. Noida; Bangalore)
+            verdicts.append(eligibility.Verdict(False, "blocked", f"Not in the US: {m[1][:200]}"))
         else:
             verdicts.append(eligibility.evaluate(job.title, job.company or source["name"], text, settings,
                                                  loose=job.loose))

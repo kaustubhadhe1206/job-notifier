@@ -676,9 +676,16 @@ def _smartrecruiters_description(c, company: str, job_id: str) -> str:
     return _strip_html(" ".join(s.get("text") or "" for s in sections if isinstance(s, dict)))
 
 
+WORKDAY_LOCATIONS = re.compile(r"^Workday locations: (.*?) \|\| ")
+
+
 def _workday_description(c, cxs_url: str) -> str:
-    d = _get(c, cxs_url, headers=_JSON).json()
-    return _strip_html((d.get("jobPostingInfo") or {}).get("jobDescription") or "")
+    """The description, prefixed with every location of the job: Workday's job list only says
+    "2 Locations", so this is where the checker learns whether any of them is in the US."""
+    info = _get(c, cxs_url, headers=_JSON).json().get("jobPostingInfo") or {}
+    locs = [info.get("location"), *(info.get("additionalLocations") or []), (info.get("country") or {}).get("descriptor")]
+    prefix = "; ".join(x for x in locs if isinstance(x, str) and x)
+    return f"Workday locations: {prefix} || " * bool(prefix) + _strip_html(info.get("jobDescription") or "")
 
 
 def _json_ld_description(page: str) -> str:

@@ -65,6 +65,7 @@ LEVEL_RE = re.compile(
     r"\b(?:L|E|IC|P)\s?-?[5-9]\b"
     r"|(?i:\b(?:engineer|developer|swe|sde|programmer)\s*-?\s*(?:[3-9])\b)"
     r"|(?i:\blevel\s*[3-9]\b)"
+    r"|\b[SLP]MTS\b"  # Senior / Lead / Principal Member of Technical Staff (Salesforce, Oracle, ...)
 )
 
 
