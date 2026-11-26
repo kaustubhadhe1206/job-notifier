@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import os
+import re
 import smtplib
 from datetime import datetime, timezone
 from email.message import EmailMessage
@@ -16,7 +17,20 @@ def recipient(settings: dict) -> str:
     return (settings.get("notify_email") or os.environ.get("NOTIFY_EMAIL") or os.environ.get("SMTP_USER") or "").strip()
 
 
-def send_email(to: str, subject: str, text: str, html: str) -> None:
+EMAIL_RE = re.compile(r"^[^@\s,;<>]+@[^@\s,;<>]+\.[^@\s,;<>]+$")
+
+
+def parse_emails(value: str) -> tuple[list[str], list[str]]:
+    """'a@x.com, b@y.edu' -> (valid addresses, invalid entries)."""
+    items = [x for x in re.split(r"[\s,;]+", value or "") if x]
+    return [x for x in items if EMAIL_RE.match(x)], [x for x in items if not EMAIL_RE.match(x)]
+
+
+def cc_list(settings: dict) -> list[str]:
+    return parse_emails(settings.get("cc_emails") or "")[0]
+
+
+def send_email(to: str, subject: str, text: str, html: str, cc: list[str] | None = None) -> None:
     host = os.environ.get("SMTP_HOST", "smtp.gmail.com")
     port = int(os.environ.get("SMTP_PORT", "587"))
     user, password = os.environ.get("SMTP_USER"), os.environ.get("SMTP_PASSWORD")
@@ -31,6 +45,8 @@ def send_email(to: str, subject: str, text: str, html: str) -> None:
     msg["Subject"] = subject
     msg["From"] = os.environ.get("EMAIL_FROM") or f"Job Notifier <{user}>"
     msg["To"] = to
+    if cc:
+        msg["Cc"] = ", ".join(cc)  # send_message() delivers to To and Cc
     msg.set_content(text)
     msg.add_alternative(html, subtype="html")
 
@@ -83,7 +99,7 @@ def _ago(dt: datetime | None) -> str:
     return f"{mins // 1440} days ago"
 
 
-def send_jobs_email(to: str, jobs: list[dict], app_url: str = "") -> None:
+def send_jobs_email(to: str, jobs: list[dict], app_url: str = "", cc: list[str] | None = None) -> None:
     n = len(jobs)
     first = jobs[0]
     hidden = sum(1 for j in jobs if (j.get("channel") or "").startswith("hidden"))
@@ -133,4 +149,4 @@ def send_jobs_email(to: str, jobs: list[dict], app_url: str = "") -> None:
         <p style="font-size:12px;color:#9ca3af;margin-top:16px">{footer}</p>
       </div></body></html>"""
     text = f"{n} new job{'s' if n != 1 else ''} just posted\n\n" + "\n\n".join(text_lines)
-    send_email(to, subject, text, html)
+    send_email(to, subject, text, html, cc=cc)

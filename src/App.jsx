@@ -873,7 +873,8 @@ function SettingsTab({ settings, setup, ai, reload, notify }) {
     setSending(true);
     try {
       const r = await api("/api/test-email", { method: "POST" });
-      notify(`Test email sent to ${r.to}. Check your inbox (and spam).`);
+      const cc = r.cc && r.cc.length ? ` (CC: ${r.cc.join(", ")})` : "";
+      notify(`Test email sent to ${r.to}${cc}. Check your inbox (and spam).`);
     } catch (err) {
       notify(err.message, "error");
     } finally {
@@ -898,6 +899,10 @@ function SettingsTab({ settings, setup, ai, reload, notify }) {
             {sending ? "Sending…" : "Send test email"}
           </button>
         </div>
+        <label className="field">
+          <span>CC: also send every email to (separate several addresses with commas)</span>
+          <input type="text" value={form.cc_emails || ""} onChange={set("cc_emails")} placeholder="friend@example.com" />
+        </label>
         <label className="check-field"><input type="checkbox" checked={form.paused} onChange={set("paused")} /> Pause emails (jobs are still tracked)</label>
 
         <h3>What to look for</h3>

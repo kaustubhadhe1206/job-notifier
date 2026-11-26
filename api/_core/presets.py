@@ -3,6 +3,7 @@ with emphasis on startups and mid-sized companies. Everything is editable in the
 
 DEFAULT_SETTINGS = {
     "notify_email": "",  # empty = NOTIFY_EMAIL env var, else SMTP_USER
+    "cc_emails": "",     # comma-separated addresses that get a copy (Cc) of every email
     "include_keywords": [
         "software engineer", "software developer", "software development engineer", "SWE", "SDE",
         "backend", "back-end", "back end", "frontend", "front-end", "full stack", "full-stack", "fullstack",

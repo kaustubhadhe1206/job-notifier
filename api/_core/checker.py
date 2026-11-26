@@ -327,7 +327,8 @@ def run_check(trigger: str = "cron", force: bool = False, source_ids: list[int] 
                 unique.sort(key=lambda j: (CHANNEL_RANK.get(j.get("channel"), 5), bool(j.get("tags")),
                                            rank.get(j.get("visa"), 3)))
                 try:
-                    notifier.send_jobs_email(notifier.recipient(settings), unique, os.environ.get("APP_URL", ""))
+                    notifier.send_jobs_email(notifier.recipient(settings), unique, os.environ.get("APP_URL", ""),
+                                             cc=notifier.cc_list(settings))
                     summary["emailed"] = len(unique)
                 except Exception as e:  # noqa: BLE001 - un-claim so the next run retries
                     db.unclaim(conn, [j["id"] for j in pending])

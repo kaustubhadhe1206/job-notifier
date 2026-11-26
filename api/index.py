@@ -81,6 +81,7 @@ class DetectIn(BaseModel):
 
 class SettingsIn(BaseModel):
     notify_email: str = Field(default="", max_length=320)
+    cc_emails: str = Field(default="", max_length=2000)
     include_keywords: list[str] = []
     exclude_keywords: list[str] = []
     exclude_companies: list[str] = []
@@ -324,6 +325,10 @@ def get_settings():
 def save_settings(body: SettingsIn):
     values = body.model_dump()
     values["notify_email"] = values["notify_email"].strip()
+    cc, invalid = notifier.parse_emails(values["cc_emails"])
+    if invalid:
+        raise HTTPException(400, f"Not an email address in CC: {', '.join(invalid)[:200]}")
+    values["cc_emails"] = ", ".join(dict.fromkeys(cc))
     for key in WORD_LIST_SETTINGS:
         values[key] = _clean_words(values[key])
     with db.connect() as conn:
@@ -339,7 +344,8 @@ def save_settings(body: SettingsIn):
 @app.post("/api/test-email", dependencies=Admin)
 def test_email():
     with db.connect() as conn:
-        to = notifier.recipient(db.get_settings(conn))
+        settings = db.get_settings(conn)
+    to, cc = notifier.recipient(settings), notifier.cc_list(settings)
     sample = [{
         "title": "Senior Software Engineer (test email)",
         "company": "Job Notifier",
@@ -350,10 +356,10 @@ def test_email():
         "note": "Posting mentions sponsorship: “Visa sponsorship is available for this role.”",
     }]
     try:
-        notifier.send_jobs_email(to, sample, os.environ.get("APP_URL", ""))
+        notifier.send_jobs_email(to, sample, os.environ.get("APP_URL", ""), cc=cc)
     except Exception as e:  # noqa: BLE001
         raise HTTPException(502, f"Could not send email: {e}") from e
-    return {"ok": True, "to": to}
+    return {"ok": True, "to": to, "cc": cc}
 
 
 @app.post("/api/test-sheet", dependencies=Admin)
