@@ -338,7 +338,19 @@ def delete_source(conn, source_id: int) -> bool:
     return conn.execute("DELETE FROM sources WHERE id = %s", (source_id,)).rowcount > 0
 
 
-def claim_due_sources(conn, *, force=False, ids=None, limit=60, auto_limit=30) -> list[dict]:
+def release_sources(conn, source_ids: list[int]) -> None:
+    """Put claimed companies back without checking them (e.g. their site said "too many requests"):
+    never-checked ones stay never-checked, the others are due again in a few minutes."""
+    if source_ids:
+        conn.execute(
+            """UPDATE sources SET last_checked_at = CASE WHEN initialized
+                   THEN now() - make_interval(mins => interval_minutes) + interval '5 minutes' ELSE NULL END
+               WHERE id = ANY(%s)""",
+            (source_ids,),
+        )
+
+
+def claim_due_sources(conn, *, force=False, ids=None, limit=60, auto_limit=30, skip_kinds=None) -> list[dict]:
     """Atomically pick due sources and stamp last_checked_at, so overlapping runs never fetch the
     same source twice. Your own companies and feeds: every due one (up to limit). Discovered
     companies: at most auto_limit per run (the free-tier CPU budget), most overdue first relative
@@ -359,6 +371,7 @@ def claim_due_sources(conn, *, force=False, ids=None, limit=60, auto_limit=30) -
                 SELECT id FROM sources
                 WHERE enabled AND origin = 'auto' AND last_checked_at IS NULL
                   AND (%(ids)s::int[] IS NULL OR id = ANY(%(ids)s::int[]))
+                  AND NOT (kind = ANY(%(skip)s::text[]))
                 ORDER BY created_at, id
                 LIMIT %(reserve)s
                 FOR UPDATE SKIP LOCKED),
@@ -366,6 +379,7 @@ def claim_due_sources(conn, *, force=False, ids=None, limit=60, auto_limit=30) -
                 SELECT id FROM sources
                 WHERE enabled AND origin = 'auto' AND (%(ids)s::int[] IS NULL OR id = ANY(%(ids)s::int[]))
                   AND id NOT IN (SELECT id FROM newcomers)
+                  AND NOT (kind = ANY(%(skip)s::text[]))
                   AND (last_checked_at IS NULL
                        OR last_checked_at <= now() - make_interval(mins => interval_minutes) + interval '20 seconds')
                 ORDER BY CASE WHEN last_checked_at IS NULL THEN 1.5
@@ -376,7 +390,7 @@ def claim_due_sources(conn, *, force=False, ids=None, limit=60, auto_limit=30) -
             WHERE s.id IN (SELECT id FROM own UNION ALL SELECT id FROM newcomers UNION ALL SELECT id FROM auto)
             RETURNING {SOURCE_COLS}""",
         {"ids": ids, "force": force, "limit": limit, "auto_limit": auto_limit,
-         "reserve": max(1, auto_limit // 3)},
+         "reserve": max(1, auto_limit // 3), "skip": list(skip_kinds or [])},
     ).fetchall()
 
 
