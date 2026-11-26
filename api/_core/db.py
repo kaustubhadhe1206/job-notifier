@@ -480,15 +480,17 @@ def source_error(conn, source_id: int, error: str, retry_soon: bool = False) -> 
     (LinkedIn rate limits usually pass within minutes, and waiting 10 minutes after each one let
     jobs pile up and arrive an hour old); after that, back to the normal interval."""
     gone = "HTTP 404" in error
+    rate_limited = "429" in error  # the site is busy, not gone: never switches a company off
     conn.execute(
-        """UPDATE sources SET last_error = %s, error_count = error_count + 1,
-               enabled = CASE WHEN origin = 'auto' AND (error_count + 1 >= %s OR (%s AND NOT initialized))
+        """UPDATE sources SET last_error = %s,
+               error_count = error_count + CASE WHEN %s AND origin = 'auto' THEN 0 ELSE 1 END,
+               enabled = CASE WHEN origin = 'auto' AND ((NOT %s AND error_count + 1 >= %s) OR (%s AND NOT initialized))
                               THEN FALSE ELSE enabled END,
                last_checked_at = CASE WHEN %s AND error_count < 3 AND interval_minutes > 3
                                       THEN now() - make_interval(mins => interval_minutes) + interval '3 minutes 20 seconds'
                                       ELSE last_checked_at END
            WHERE id = %s""",
-        (error[:500], AUTO_DISABLE_AFTER_ERRORS, gone, retry_soon, source_id),
+        (error[:500], rate_limited, rate_limited, AUTO_DISABLE_AFTER_ERRORS, gone, retry_soon, source_id),
     )
 
 
@@ -524,6 +526,14 @@ def set_eligibility(conn, verdicts: list[dict]) -> None:
                WHERE j.id = r.id""",
             (Jsonb(verdicts),),
         )
+
+
+def mark_for_check(conn, job_ids: list[int]) -> None:
+    """Jobs the GitHub Actions scanner found: the next Vercel run reads their descriptions
+    (see pending_jobs), checks eligibility and emails them."""
+    if job_ids:
+        conn.execute("UPDATE jobs SET visa = 'pending', checks = 0, checked_at = NULL, "
+                     "note = 'Found by the scanner; reading the posting' WHERE id = ANY(%s)", (job_ids,))
 
 
 def pending_jobs(conn, limit: int) -> list[dict]:
@@ -681,7 +691,11 @@ def stats(conn) -> dict:
            FROM company_queue"""
     ).fetchone())
     row.update(conn.execute(
-        """SELECT count(*) AS runs_24h, COALESCE(sum(cpu_ms), 0) AS cpu_ms_24h
+        """SELECT count(*) FILTER (WHERE trigger <> 'scanner') AS runs_24h,
+                  COALESCE(sum(cpu_ms) FILTER (WHERE trigger <> 'scanner'), 0) AS cpu_ms_24h,
+                  count(*) FILTER (WHERE trigger = 'scanner') AS scanner_runs_24h,
+                  COALESCE(sum(checked) FILTER (WHERE trigger = 'scanner'), 0) AS scanner_checks_24h,
+                  max(finished_at) FILTER (WHERE trigger = 'scanner') AS scanner_last_at
            FROM runs WHERE started_at > now() - interval '24 hours'"""
     ).fetchone())
     return row
@@ -700,7 +714,7 @@ def record_run(conn, *, trigger, started_at, checked, new_jobs, emailed, discove
 
 
 def last_run(conn) -> dict | None:
-    return conn.execute("SELECT * FROM runs ORDER BY id DESC LIMIT 1").fetchone()
+    return conn.execute("SELECT * FROM runs WHERE trigger <> 'scanner' ORDER BY id DESC LIMIT 1").fetchone()
 
 
 def last_cron_run(conn) -> dict | None:

@@ -192,6 +192,22 @@ If the credit runs out, the dashboard shows "Your credit balance is too low…" 
 
 ---
 
+## Step 10 — GitHub scanner (checks thousands of companies, free)
+
+Vercel's free plan has CPU for a few hundred company career pages checked often. The GitHub
+scanner (`.github/workflows/scan.yml`) checks all the others on GitHub's machines every few
+minutes, which is free for public repositories. It only finds new jobs; Vercel still reads each
+description, runs the visa and AI checks, and sends the email.
+
+1. On GitHub, open your repository → **Settings** → **Secrets and variables** → **Actions**.
+2. **New repository secret**: name `DATABASE_URL`, value = the same connection string you gave Vercel.
+3. Open the **Actions** tab. If asked, click **I understand my workflows, go ahead and enable them**.
+4. Click **Scan company career pages** → **Run workflow** to start the first run now.
+
+The dashboard's Sources tab shows "GitHub scanner: last run … ago" once it works. GitHub may
+start scheduled runs a few minutes late, and it pauses scheduled workflows in a repository with
+no commits for 60 days (one click on "Enable workflow" turns it back on).
+
 ## Troubleshooting
 
 | What you see | Fix |

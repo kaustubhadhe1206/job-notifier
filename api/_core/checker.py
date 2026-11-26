@@ -181,6 +181,87 @@ def ai_usage_for_run(conn, settings: dict) -> llm_check.Usage | None:
     return llm_check.Usage()
 
 
+def process_results(conn, sources: list[dict], results: list[FetchResult], settings: dict, filters: Filters,
+                    summary: dict, boards: dict, names: dict) -> list[tuple[int, dict, fetchers.Job]]:
+    """Store what each fetched source returned: errors, unchanged boards, new jobs that pass your
+    filters, check intervals, and (from feeds) company boards and names to discover. Shared by the
+    every-minute cron run and the GitHub Actions scanner. Returns the new jobs that still need the
+    description check: [(job row id, source, job)]."""
+    auto_interval = int(settings.get("auto_interval_minutes") or 15)
+    idle_interval = int(settings.get("auto_idle_interval_minutes") or 1440)
+    candidates: list[tuple[int, dict, fetchers.Job]] = []
+    for source, res in zip(sources, results):
+        if res.error:
+            db.source_error(conn, source["id"], res.error, retry_soon=source["kind"] == "linkedin")
+            summary["errors"].append({"source": source["name"], "error": res.error})
+            continue
+        ids_hash = _ids_hash(res.jobs) if res.jobs is not None else None
+        if res.not_modified or (source["initialized"] and ids_hash == source["ids_hash"]):
+            db.source_ok(conn, source["id"], etag=res.etag)
+            summary["unchanged"] += 1
+            continue
+
+        # First successful fetch = baseline: jobs that were already open are only emailed
+        # if their exact posting time is within max_age_minutes (see filters._freshness).
+        baseline = not source["initialized"]
+        if source["kind"] in fetchers.BOARD_KINDS:
+            for j in res.jobs:  # company boards: the company is the board itself
+                j.company = j.company or source["name"]
+        observed = source["kind"] in fetchers.OBSERVED_KINDS and _recently_checked(source)
+        engineering = [j for j in res.jobs if filters.hires_engineers(j)]
+
+        # Only jobs that fit your filters (role, level, company, US) are stored: with thousands
+        # of companies watched, storing every posting would fill the free database.
+        channel = _channel(source)
+        reasons, rows = {}, []
+        for j in res.jobs:
+            if filters.static_reason(j) is not None:
+                continue
+            reasons[j.external_id] = filters.reason(j, baseline=baseline, observed=observed)
+            rows.append({
+                "external_id": j.external_id,
+                "title": j.title[:500],
+                "company": (j.company or "")[:200],
+                "location": (j.location or "")[:300],
+                "url": j.url,
+                "posted_at": j.posted_at.isoformat() if fetchers.is_precise(j.posted_at) else None,
+                "baseline": baseline,
+                "matched": False,  # decided below, after reading the description
+                "note": reasons[j.external_id],
+                "channel": channel,
+            })
+        inserted = db.insert_jobs(conn, source["id"], rows)
+
+        # Companies with more US engineering openings are checked more often (see db.tier_interval).
+        interval = None
+        if source["origin"] == "auto" and source["kind"] in fetchers.BOARD_KINDS:
+            interval = db.tier_interval(len(engineering), auto_interval, idle_interval)
+        db.source_ok(conn, source["id"], job_count=len(res.jobs), etag=res.etag, ids_hash=ids_hash,
+                     relevant_count=len(engineering), interval_minutes=interval)
+
+        if not baseline:
+            summary["new_jobs"] += len(inserted)
+        new_rows = {r["external_id"]: r["id"] for r in inserted}
+        candidates += [(new_rows[j.external_id], source, j) for j in res.jobs
+                       if j.external_id in new_rows and reasons.get(j.external_id, "x") is None]
+
+        # Discovery from feeds and LinkedIn: (1) links to company career pages inside posts,
+        # (2) names of companies hiring engineers, looked up on the hiring platforms later.
+        if settings.get("auto_discover") and source["kind"] in fetchers.FEED_KINDS:
+            extra = [j for j in res.discovery or [] if filters.hires_engineers(j)]
+            for j in engineering + extra:
+                for kind, cfg in detect.find_boards(f"{j.url} {j.text}"):
+                    key = fetchers.board_key(kind, cfg)
+                    if key not in boards:
+                        name = j.company if j.company and len(j.company) < 60 else detect.name_for(kind, cfg)
+                        boards[key] = {"name": name, "kind": kind, "config": cfg,
+                                       "url": fetchers.public_url(kind, cfg), "board_key": key}
+                key = eligibility.normalize_company(j.company)
+                if len(key) >= 2 and len(j.company) < 60:
+                    names[key] = j.company.strip()
+    return candidates
+
+
 def run_check(trigger: str = "cron", force: bool = False, source_ids: list[int] | None = None) -> dict:
     cpu0, started = time.process_time(), datetime.now(timezone.utc)
 
@@ -197,80 +278,10 @@ def run_check(trigger: str = "cron", force: bool = False, source_ids: list[int] 
                "discovered": 0, "errors": [], "new": []}
     boards: dict[str, dict] = {}
     names: dict[str, str] = {}
-    candidates: list[tuple[int, dict, fetchers.Job]] = []  # (job row id, source, job)
     auto_interval = int(settings.get("auto_interval_minutes") or 15)
-    idle_interval = int(settings.get("auto_idle_interval_minutes") or 1440)
 
     with db.connect() as conn:
-        for source, res in zip(sources, results):
-            if res.error:
-                db.source_error(conn, source["id"], res.error, retry_soon=source["kind"] == "linkedin")
-                summary["errors"].append({"source": source["name"], "error": res.error})
-                continue
-            ids_hash = _ids_hash(res.jobs) if res.jobs is not None else None
-            if res.not_modified or (source["initialized"] and ids_hash == source["ids_hash"]):
-                db.source_ok(conn, source["id"], etag=res.etag)
-                summary["unchanged"] += 1
-                continue
-
-            # First successful fetch = baseline: jobs that were already open are only emailed
-            # if their exact posting time is within max_age_minutes (see filters._freshness).
-            baseline = not source["initialized"]
-            if source["kind"] in fetchers.BOARD_KINDS:
-                for j in res.jobs:  # company boards: the company is the board itself
-                    j.company = j.company or source["name"]
-            observed = source["kind"] in fetchers.OBSERVED_KINDS and _recently_checked(source)
-            engineering = [j for j in res.jobs if filters.hires_engineers(j)]
-
-            # Only jobs that fit your filters (role, level, company, US) are stored: with thousands
-            # of companies watched, storing every posting would fill the free database.
-            channel = _channel(source)
-            reasons, rows = {}, []
-            for j in res.jobs:
-                if filters.static_reason(j) is not None:
-                    continue
-                reasons[j.external_id] = filters.reason(j, baseline=baseline, observed=observed)
-                rows.append({
-                    "external_id": j.external_id,
-                    "title": j.title[:500],
-                    "company": (j.company or "")[:200],
-                    "location": (j.location or "")[:300],
-                    "url": j.url,
-                    "posted_at": j.posted_at.isoformat() if fetchers.is_precise(j.posted_at) else None,
-                    "baseline": baseline,
-                    "matched": False,  # decided below, after reading the description
-                    "note": reasons[j.external_id],
-                    "channel": channel,
-                })
-            inserted = db.insert_jobs(conn, source["id"], rows)
-
-            # Companies with more US engineering openings are checked more often (see db.tier_interval).
-            interval = None
-            if source["origin"] == "auto" and source["kind"] in fetchers.BOARD_KINDS:
-                interval = db.tier_interval(len(engineering), auto_interval, idle_interval)
-            db.source_ok(conn, source["id"], job_count=len(res.jobs), etag=res.etag, ids_hash=ids_hash,
-                         relevant_count=len(engineering), interval_minutes=interval)
-
-            if not baseline:
-                summary["new_jobs"] += len(inserted)
-            new_rows = {r["external_id"]: r["id"] for r in inserted}
-            candidates += [(new_rows[j.external_id], source, j) for j in res.jobs
-                           if j.external_id in new_rows and reasons.get(j.external_id, "x") is None]
-
-            # Discovery from feeds and LinkedIn: (1) links to company career pages inside posts,
-            # (2) names of companies hiring engineers, looked up on the hiring platforms later.
-            if settings.get("auto_discover") and source["kind"] in fetchers.FEED_KINDS:
-                extra = [j for j in res.discovery or [] if filters.hires_engineers(j)]
-                for j in engineering + extra:
-                    for kind, cfg in detect.find_boards(f"{j.url} {j.text}"):
-                        key = fetchers.board_key(kind, cfg)
-                        if key not in boards:
-                            name = j.company if j.company and len(j.company) < 60 else detect.name_for(kind, cfg)
-                            boards[key] = {"name": name, "kind": kind, "config": cfg,
-                                           "url": fetchers.public_url(kind, cfg), "board_key": key}
-                    key = eligibility.normalize_company(j.company)
-                    if len(key) >= 2 and len(j.company) < 60:
-                        names[key] = j.company.strip()
+        candidates = process_results(conn, sources, results, settings, filters, summary, boards, names)
 
         if boards:
             summary["discovered"] = db.add_auto_sources(conn, list(boards.values()), auto_interval)

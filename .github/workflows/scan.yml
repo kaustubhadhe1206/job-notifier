@@ -1,0 +1,33 @@
+# Checks the career pages of every discovered company (thousands, from Common Crawl and job feeds)
+# on GitHub's machines, so Vercel's free CPU only has to read descriptions and send emails.
+# Needs one repository secret: DATABASE_URL (the same Postgres connection string as on Vercel).
+name: Scan company career pages
+
+on:
+  schedule:
+    - cron: "*/5 * * * *"   # GitHub may start scheduled runs a few minutes late
+  workflow_dispatch:         # "Run workflow" button for a manual run
+
+concurrency:
+  group: scanner             # one run at a time; the next one waits for it
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  scan:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: pip install -r requirements.txt
+      - name: Scan
+        run: python scripts/scan.py
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          SCAN_SECONDS: "240"

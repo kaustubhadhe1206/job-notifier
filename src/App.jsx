@@ -460,6 +460,17 @@ function DiscoveryStatus({ stats, seed }) {
         Web index (Common Crawl): {seedText}
         {seed?.last_error && <span className="error"> · last try failed ({seed.last_error}), retrying automatically</span>}
       </p>
+      <p className="small muted">
+        GitHub scanner:{" "}
+        {stats.scanner_last_at ? (
+          <>
+            last run <strong>{timeAgo(stats.scanner_last_at)}</strong> ·{" "}
+            {Number(stats.scanner_checks_24h).toLocaleString()} career page checks in 24h
+          </>
+        ) : (
+          <>not running yet (add the DATABASE_URL secret on GitHub; see SETUP.md)</>
+        )}
+      </p>
     </section>
   );
 }
