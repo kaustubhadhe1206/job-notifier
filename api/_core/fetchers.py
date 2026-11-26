@@ -12,6 +12,7 @@ Every fetcher has the signature fetcher(client, config, ctx) -> list[Job].
 """
 from __future__ import annotations
 
+import hashlib
 import html
 import json
 import re
@@ -87,16 +88,33 @@ def client() -> httpx.Client:
 
 
 def _get(c: httpx.Client, url: str, ctx: FetchCtx | None = None, **kw) -> httpx.Response:
+    """GET; with ctx, an unchanged response raises NotModified.
+
+    ctx.etag holds "<server ETag>|fp:<fingerprint of the body>". Many APIs (Greenhouse) send no
+    ETag, and others ignore If-None-Match, but all of them return the exact same bytes while a
+    board is unchanged. Comparing a fingerprint of the bytes skips parsing the JSON, which is
+    ~10x less CPU per check and lets the free tier cover far more companies."""
     headers = dict(kw.pop("headers", None) or {})
-    if ctx and ctx.etag:
-        headers["If-None-Match"] = ctx.etag
+    server_etag = (ctx.etag or "").partition("|fp:")[0] if ctx else ""
+    if server_etag:
+        headers["If-None-Match"] = server_etag
     r = c.get(url, headers=headers, **kw)
     if r.status_code == 304:
         raise NotModified()
     r.raise_for_status()
-    if ctx:
-        ctx.new_etag = r.headers.get("etag")
+    _unchanged(ctx, r)
     return r
+
+
+def _unchanged(ctx: FetchCtx | None, r: httpx.Response) -> None:
+    """Raise NotModified if this response is byte-identical to the one seen last time (see _get).
+    Multi-page fetchers call it on their first page, which includes the total job count."""
+    if not ctx:
+        return
+    fp = hashlib.blake2b(r.content, digest_size=12).hexdigest()
+    if fp == (ctx.etag or "").partition("|fp:")[2]:
+        raise NotModified()
+    ctx.new_etag = f"{r.headers.get('etag') or ''}|fp:{fp}"
 
 
 class DateOnly(datetime):
@@ -252,7 +270,7 @@ def fetch_smartrecruiters(c, cfg, ctx):
     jobs, offset = [], 0
     while offset < 1000:
         data = _get(c, f"https://api.smartrecruiters.com/v1/companies/{company_id}/postings",
-                    params={"limit": 100, "offset": offset}).json()
+                    ctx if offset == 0 else None, params={"limit": 100, "offset": offset}).json()
         content = data.get("content") or []
         for j in content:
             loc = j.get("location") or {}
@@ -300,6 +318,8 @@ def fetch_workday(c, cfg, ctx):
         r = c.post(api, json={"appliedFacets": {}, "limit": page, "offset": offset, "searchText": cfg.get("search", "")},
                    headers={"Accept": "application/json", "Content-Type": "application/json"})
         r.raise_for_status()
+        if offset == 0:
+            _unchanged(ctx, r)  # same newest postings and total as last time: skip the other pages
         data = r.json()
         posts = data.get("jobPostings") or []
         for j in posts:
@@ -523,6 +543,7 @@ def fetch_weworkremotely(c, cfg, ctx):
 
 
 SIMPLIFY_REPO = "SimplifyJobs/New-Grad-Positions"
+SIMPLIFY_MAX_AGE_DAYS = 3
 _EMOJI = re.compile("[\U0001F000-\U0001FAFF☀-➿️‍]")
 _TRACKING_PARAMS = {"utm_source", "utm_medium", "utm_campaign", "ref", "embed", "source", "gh_src"}
 
@@ -538,7 +559,8 @@ def _clean_apply_url(url: str) -> str:
 
 def fetch_simplify(c, cfg, ctx):
     """SimplifyJobs' GitHub list of new grad roles (README tables, regenerated about every 30 min).
-    Only open roles posted today (Age '0d') are returned; the link is the table's 'Apply' button
+    Open roles posted in the last SIMPLIFY_MAX_AGE_DAYS days are returned (a role is emailed when it
+    first appears on the list, see OBSERVED_KINDS); the link is the table's 'Apply' button
     (the company's own posting), whose description is read and checked like any other job."""
     repo, branch = cfg.get("repo") or SIMPLIFY_REPO, cfg.get("branch") or "dev"
     readme = _get(c, f"https://raw.githubusercontent.com/{repo}/{branch}/README.md", ctx,
@@ -567,7 +589,10 @@ def fetch_simplify(c, cfg, ctx):
             job = Job(sid.group(1) if sid else url, title, url, loc, company[:100], None, text=url)
             # Every open role points at a company's hiring page: all of them feed company discovery.
             ctx.discovery.append(job)
-            if _strip_tags(cells[4]) == "0d":
+            # Age is when the company posted it, and roles are often added to the list a day or two
+            # later (already "1d"). Return the last few days; only roles new to the list are emailed.
+            age = re.fullmatch(r"(\d+)d", _strip_tags(cells[4]).strip())
+            if age and int(age[1]) <= SIMPLIFY_MAX_AGE_DAYS:
                 jobs.append(job)
     return jobs
 

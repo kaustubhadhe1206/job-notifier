@@ -343,7 +343,9 @@ def claim_due_sources(conn, *, force=False, ids=None, limit=60, auto_limit=30) -
     same source twice. Your own companies and feeds: every due one (up to limit). Discovered
     companies: at most auto_limit per run (the free-tier CPU budget), most overdue first relative
     to their interval, so when there are more companies than the budget allows, every company's
-    interval stretches by the same factor. Never-checked companies count as 1.5x overdue."""
+    interval stretches by the same factor. Never-checked companies count as 1.5x overdue, and a
+    third of the budget is reserved for them, so a big import (thousands from Common Crawl) is
+    always worked through instead of waiting behind companies that are due."""
     return conn.execute(
         f"""WITH own AS (
                 SELECT id FROM sources
@@ -353,19 +355,28 @@ def claim_due_sources(conn, *, force=False, ids=None, limit=60, auto_limit=30) -
                 ORDER BY last_checked_at NULLS FIRST
                 LIMIT %(limit)s
                 FOR UPDATE SKIP LOCKED),
+            newcomers AS (
+                SELECT id FROM sources
+                WHERE enabled AND origin = 'auto' AND last_checked_at IS NULL
+                  AND (%(ids)s::int[] IS NULL OR id = ANY(%(ids)s::int[]))
+                ORDER BY created_at, id
+                LIMIT %(reserve)s
+                FOR UPDATE SKIP LOCKED),
             auto AS (
                 SELECT id FROM sources
                 WHERE enabled AND origin = 'auto' AND (%(ids)s::int[] IS NULL OR id = ANY(%(ids)s::int[]))
+                  AND id NOT IN (SELECT id FROM newcomers)
                   AND (last_checked_at IS NULL
                        OR last_checked_at <= now() - make_interval(mins => interval_minutes) + interval '20 seconds')
                 ORDER BY CASE WHEN last_checked_at IS NULL THEN 1.5
                               ELSE extract(epoch FROM now() - last_checked_at) / (interval_minutes * 60.0) END DESC
-                LIMIT %(auto_limit)s
+                LIMIT (SELECT %(auto_limit)s - count(*) FROM newcomers)
                 FOR UPDATE SKIP LOCKED)
             UPDATE sources s SET last_checked_at = now()
-            WHERE s.id IN (SELECT id FROM own UNION ALL SELECT id FROM auto)
+            WHERE s.id IN (SELECT id FROM own UNION ALL SELECT id FROM newcomers UNION ALL SELECT id FROM auto)
             RETURNING {SOURCE_COLS}""",
-        {"ids": ids, "force": force, "limit": limit, "auto_limit": auto_limit},
+        {"ids": ids, "force": force, "limit": limit, "auto_limit": auto_limit,
+         "reserve": max(1, auto_limit // 3)},
     ).fetchall()
 
 
@@ -392,8 +403,9 @@ CPU_TARGET_MS = 280  # average CPU per every-minute run: ~3.4 h/month, under Ver
 
 
 def auto_check_budget(conn) -> int:
-    """How many discovered companies a run may check. Self-tuning: every 15 minutes it's nudged
-    up or down so the average run stays near CPU_TARGET_MS."""
+    """How many discovered companies a run may check. Self-tuning: every 15 minutes it's scaled
+    by target / measured CPU (at most x1.5 or x0.7 per step), so the average run stays near
+    CPU_TARGET_MS and recovers within an hour or two after something gets cheaper or dearer."""
     st = get_meta(conn, "auto_budget") or {"limit": 25}
     now = datetime.now(timezone.utc)
     if not st.get("at") or now - datetime.fromisoformat(st["at"]) >= timedelta(minutes=15):
@@ -402,9 +414,11 @@ def auto_check_budget(conn) -> int:
                    SELECT cpu_ms FROM runs WHERE trigger = 'cron' AND started_at > now() - interval '15 minutes') r"""
         ).fetchone()
         if row["n"] >= 5:
-            avg = float(row["avg"])
-            step = 5 if avg < CPU_TARGET_MS * 0.8 else -8 if avg > CPU_TARGET_MS * 1.15 else 0
-            st["limit"] = max(5, min(100, int(st["limit"]) + step))
+            avg = max(float(row["avg"]), 1.0)
+            limit = int(st["limit"])
+            if not CPU_TARGET_MS * 0.85 <= avg <= CPU_TARGET_MS * 1.1:
+                limit = round(limit * min(1.5, max(0.7, CPU_TARGET_MS / avg))) + (1 if avg < CPU_TARGET_MS else 0)
+            st["limit"] = max(5, min(150, limit))
             st["avg_cpu_ms"] = round(avg)
         st["at"] = now.isoformat()
         set_meta(conn, "auto_budget", st)

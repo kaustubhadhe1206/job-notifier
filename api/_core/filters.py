@@ -28,7 +28,7 @@ STATE_CODES = (
 US_RE = re.compile(
     rf"\b(?:United States|North America|Americas|{US_STATES}|{US_CITIES})\b", re.I
 )
-US_CASE_RE = re.compile(rf"\b(?:US|USA|U\.S\.A?\.?|U\.S)\b|,\s*(?:{STATE_CODES})\b|\b(?:{STATE_CODES})\s*\d{{5}}")
+US_CASE_RE = re.compile(rf"\b(?:US|USA|U\.S\.A?\.?|U\.S|SF|SFBA|NYC|DC)\b|,\s*(?:{STATE_CODES})\b|\b(?:{STATE_CODES})\s*\d{{5}}")
 NON_US_RE = re.compile(
     r"\b(?:Europe|EU|EMEA|APAC|LATAM|UK|United Kingdom|England|London|Ireland|Dublin|Germany|Berlin|Munich|"
     r"France|Paris|Netherlands|Amsterdam|Spain|Madrid|Barcelona|Portugal|Lisbon|Italy|Poland|Warsaw|"
