@@ -323,7 +323,7 @@ def run_check(trigger: str = "cron", force: bool = False, source_ids: list[int] 
         for p in db.pending_jobs(conn, PENDING_PER_RUN):
             src = {"id": p["source_id"], "name": p["source_name"], "kind": p["kind"], "config": p["config"]}
             job = fetchers.Job(p["external_id"], p["title"], p["url"] or "", p["location"] or "", p["company"] or "",
-                               p["posted_at"])
+                               p["posted_at"], description=p["description"] or "")  # read by the scanner, if any
             work.append((p["id"], src, job, p["checks"] + 1))
         work = _drop_repeats(conn, work)
         conn.commit()

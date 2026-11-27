@@ -71,6 +71,8 @@ ALTER TABLE jobs ADD COLUMN IF NOT EXISTS checks INT NOT NULL DEFAULT 0;   -- at
 ALTER TABLE jobs ADD COLUMN IF NOT EXISTS checked_at TIMESTAMPTZ;
 -- labels that don't block a job, comma-separated: easy_apply (LinkedIn Easy Apply), recruiter (staffing agency / job site)
 ALTER TABLE jobs ADD COLUMN IF NOT EXISTS tags TEXT;
+-- a pending job's description read by the GitHub scanner when LinkedIn refused Vercel (cleared once decided)
+ALTER TABLE jobs ADD COLUMN IF NOT EXISTS description TEXT;
 CREATE INDEX IF NOT EXISTS jobs_visa_pending_idx ON jobs (first_seen_at) WHERE visa = 'pending';
 ALTER TABLE jobs ADD COLUMN IF NOT EXISTS sheet_synced BOOLEAN NOT NULL DEFAULT FALSE;
 -- where the job was found: hidden | hidden_new | watchlist | simplify | linkedin | jobboard
@@ -534,7 +536,8 @@ def set_eligibility(conn, verdicts: list[dict]) -> None:
     if verdicts:
         conn.execute(
             """UPDATE jobs j SET matched = r.matched, visa = r.visa, note = r.note, checks = r.checks,
-                   tags = r.tags, checked_at = now()
+                   tags = r.tags, checked_at = now(),
+                   description = CASE WHEN r.visa = 'pending' THEN j.description END
                FROM jsonb_to_recordset(%s) AS r(id bigint, matched boolean, visa text, note text, checks int,
                                                 tags text)
                WHERE j.id = r.id""",
@@ -554,15 +557,34 @@ def pending_jobs(conn, limit: int) -> list[dict]:
     """Candidates whose description couldn't be read yet. Retries back off (40 s, 80 s, 160 s, ...
     up to 15 min), so LinkedIn rate limits have time to pass: 28 tries span about 6 hours."""
     return conn.execute(
-        """SELECT j.id, j.external_id, j.title, j.company, j.location, j.url, j.posted_at, j.checks,
+        """SELECT j.id, j.external_id, j.title, j.company, j.location, j.url, j.posted_at, j.checks, j.description,
                   s.id AS source_id, s.name AS source_name, s.kind, s.config
            FROM jobs j JOIN sources s ON s.id = j.source_id
            WHERE j.visa = 'pending' AND j.first_seen_at > now() - interval '1 day'
-             AND (j.checked_at IS NULL OR j.checked_at < now() - LEAST(
+             AND (j.description IS NOT NULL OR j.checked_at IS NULL OR j.checked_at < now() - LEAST(
                   interval '40 seconds' * power(2, GREATEST(j.checks - 1, 0)), interval '15 minutes'))
-           ORDER BY j.first_seen_at LIMIT %s""",
+           ORDER BY j.description IS NULL, j.first_seen_at LIMIT %s""",
         (limit,),
     ).fetchall()
+
+
+def linkedin_to_read(conn, limit: int) -> list[dict]:
+    """Pending LinkedIn jobs whose description LinkedIn refused to Vercel at least once: the GitHub
+    scanner (different IP addresses) tries to read them, least recently tried first."""
+    return conn.execute(
+        """SELECT j.id, j.external_id, j.url, s.kind, s.config
+           FROM jobs j JOIN sources s ON s.id = j.source_id
+           WHERE j.visa = 'pending' AND s.kind = 'linkedin' AND j.description IS NULL AND j.checks >= 1
+             AND j.first_seen_at > now() - interval '1 day'
+           ORDER BY j.checked_at NULLS FIRST LIMIT %s""",
+        (limit,),
+    ).fetchall()
+
+
+def save_description(conn, job_id: int, text: str) -> None:
+    """Hand a description read by the scanner to the next Vercel run (see pending_jobs)."""
+    conn.execute("UPDATE jobs SET description = %s WHERE id = %s AND visa = 'pending' AND description IS NULL",
+                 (text[:40000], job_id))
 
 
 def found_jobs(conn, exclude_ids: list[int]) -> list[dict]:
@@ -666,6 +688,8 @@ def recent_jobs(conn, view: str = "matched", limit: int = 200) -> list[dict]:
         "matched": "(j.matched OR j.visa = 'pending')",
         "hidden": "(j.matched OR j.visa = 'pending') AND j.channel IN ('hidden', 'hidden_new')",
         "review": "NOT j.matched AND j.visa IN ('blocked', 'unknown')",
+        # emailed without reading the posting (LinkedIn kept refusing): check these yourself
+        "unchecked": "j.matched AND ',' || coalesce(j.tags, '') || ',' LIKE '%%,unchecked,%%'",
         "new": "NOT j.baseline OR j.matched OR j.visa IS NOT NULL",
         "all": "TRUE",
     }.get(view, "j.matched")

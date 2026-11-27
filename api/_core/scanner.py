@@ -10,6 +10,10 @@ The scanner only finds new jobs. Each one that passes your filters is stored as 
 and AI checks, and emails it, exactly like jobs found on Vercel. So the scanner needs only
 DATABASE_URL, and if it stops, Vercel keeps checking companies on its own (just less often).
 
+It also reads LinkedIn job descriptions that LinkedIn refused to send to Vercel: GitHub's machines
+have different IP addresses, so LinkedIn usually answers them. The text is stored with the job and
+the next Vercel run checks it as usual (no AI key or email settings needed here).
+
 Workday (about 4,700 of the companies) rate-limits one machine hitting many of its sites at
 once, so Workday requests go a few at a time; if Workday keeps answering "too many requests",
 Workday is skipped for the rest of the run and those companies are put back in the queue.
@@ -22,7 +26,7 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 
-from . import checker, db
+from . import checker, db, fetchers
 from .filters import Filters
 
 SCAN_SECONDS = int(os.environ.get("SCAN_SECONDS", "240"))  # how long one run keeps working
@@ -31,6 +35,8 @@ WORKERS = 32       # parallel requests (mostly waiting on the network)
 IDLE_SLEEP = 20    # seconds to wait when no company is due
 GENTLE_KINDS = {"workday": 3}  # platform -> requests at a time
 TRIP_AFTER_429 = 15            # "too many requests" answers before a platform is skipped this run
+LINKEDIN_READS = 8             # LinkedIn descriptions read per minute (one at a time, a few seconds apart)
+LINKEDIN_GAP = 3               # seconds between LinkedIn requests
 
 
 class _Gate:
@@ -63,14 +69,44 @@ class _Gate:
         return res
 
 
+def read_linkedin_descriptions(limit: int = LINKEDIN_READS) -> tuple[int, int]:
+    """Read descriptions LinkedIn refused to Vercel. Returns (read, refused); stops at the first
+    refusal so this machine doesn't get blocked too."""
+    with db.connect() as conn:
+        todo = db.linkedin_to_read(conn, limit)
+    read = 0
+    for i, j in enumerate(todo):
+        if i:
+            time.sleep(LINKEDIN_GAP)
+        try:
+            text = fetchers.fetch_description(j["kind"], j["config"], j["external_id"], j["url"] or "")
+        except Exception as e:  # noqa: BLE001 - rate limits, timeouts
+            print(f"LinkedIn description refused ({type(e).__name__}: {str(e)[:80]}); trying again in a minute", flush=True)
+            return read, 1
+        if text:
+            with db.connect() as conn:
+                db.save_description(conn, j["id"], text)
+            read += 1
+    return read, 0
+
+
 def run(seconds: int = SCAN_SECONDS) -> dict:
     cpu0, t0, started = time.process_time(), time.monotonic(), datetime.now(timezone.utc)
     totals = {"checked": 0, "unchanged": 0, "new_jobs": 0, "candidates": 0, "errors": 0, "put_back": 0,
-              "batches": 0}
+              "batches": 0, "linkedin_read": 0, "linkedin_refused": 0}
+    last_linkedin = -60.0
     error_samples: list[dict] = []
     gate = _Gate()
     with ThreadPoolExecutor(max_workers=WORKERS) as pool:
         while time.monotonic() - t0 < seconds:
+            if time.monotonic() - last_linkedin >= 60:
+                last_linkedin = time.monotonic()
+                read, refused = read_linkedin_descriptions()
+                totals["linkedin_read"] += read
+                totals["linkedin_refused"] += refused
+                if read or refused:
+                    print(f"LinkedIn descriptions: {read} read for Vercel to check{', then refused' if refused else ''}",
+                          flush=True)
             with db.connect() as conn:
                 settings = db.get_settings(conn)
                 # discovered companies only; platforms that keep refusing are left for the next run

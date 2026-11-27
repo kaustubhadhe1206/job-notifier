@@ -290,6 +290,7 @@ function JobsTab({ refreshKey }) {
             ["matched", "Matches"],
             ["hidden", "Hidden only"],
             ["review", "Skipped (not eligible)"],
+            ["unchecked", "Not checked ⚠"],
             ["new", "All new postings"],
             ["all", "Everything tracked"],
           ].map(([id, label]) => (
@@ -305,7 +306,9 @@ function JobsTab({ refreshKey }) {
         <div className="empty">
           <p>No jobs here yet.</p>
           <p className="muted">
-            {view === "hidden"
+            {view === "unchecked"
+              ? "Jobs whose posting LinkedIn wouldn't show us for hours, so they were sent without the citizenship, clearance and experience checks. None right now."
+              : view === "hidden"
               ? "Jobs appear here when a hidden company (Sources → Hidden companies) posts a new matching role. The roles already open when a company is found aren't sent, so the first ones show up as these companies post again."
               : "New postings that match your filters will appear here (and in your inbox) as soon as they're spotted."}
           </p>
