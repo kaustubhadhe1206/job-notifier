@@ -865,6 +865,7 @@ function SettingsTab({ settings, setup, ai, reload, notify }) {
           seniority_exclude: toList(form.seniority_exclude),
           max_years_experience: Number(form.max_years_experience) || 0,
           max_age_minutes: Number(form.max_age_minutes) || 60,
+          linkedin_max_age_minutes: Number(form.linkedin_max_age_minutes) || 1440,
           auto_interval_minutes: Number(form.auto_interval_minutes) || 15,
           auto_idle_interval_minutes: Number(form.auto_idle_interval_minutes) || 1440,
           ai_monthly_limit_usd: Number(form.ai_monthly_limit_usd) || 0,
@@ -940,6 +941,10 @@ function SettingsTab({ settings, setup, ai, reload, notify }) {
           <label className="field">
             <span>Only email jobs posted within the last (minutes)</span>
             <input type="number" min="5" max="1440" value={form.max_age_minutes} onChange={set("max_age_minutes")} />
+          </label>
+          <label className="field">
+            <span>LinkedIn jobs: posted within the last (minutes; LinkedIn often lists jobs an hour or more late)</span>
+            <input type="number" min="5" max="1440" value={form.linkedin_max_age_minutes} onChange={set("linkedin_max_age_minutes")} />
           </label>
         </div>
 

@@ -90,6 +90,7 @@ class SettingsIn(BaseModel):
     max_years_experience: int = Field(default=2, ge=0, le=30)
     us_only: bool = True
     max_age_minutes: int = Field(default=60, ge=5, le=1440)
+    linkedin_max_age_minutes: int = Field(default=1440, ge=5, le=1440)
     skip_ineligible: bool = True
     visa_mode: Literal["require", "allow_unknown", "off"] = "allow_unknown"
     sponsor_companies: list[str] = []

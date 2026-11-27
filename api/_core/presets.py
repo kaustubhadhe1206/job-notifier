@@ -30,6 +30,9 @@ DEFAULT_SETTINGS = {
     "max_years_experience": 2,    # skip jobs whose description requires more years than this (0 = don't check)
     "us_only": True,
     "max_age_minutes": 60,        # only email jobs posted within this many minutes (see filters._freshness)
+    # LinkedIn shows many jobs 1-3 hours after they were posted (still "past hour" in its own search),
+    # and they're still worth applying to: the same day is fine for these.
+    "linkedin_max_age_minutes": 1440,
     # Work authorization (F-1 student who will need H-1B sponsorship)
     "skip_ineligible": True,      # skip jobs needing clearance, US citizenship/green card, or saying "no sponsorship"
     "visa_mode": "allow_unknown", # allow_unknown: email every job without restrictions; jobs that don't
@@ -52,7 +55,7 @@ DEFAULT_SETTINGS = {
 LINKEDIN_ENTRY_LEVELS = "2,3"
 
 # Bump when presets change; existing databases are migrated once (see db._migrate_presets).
-PRESET_VERSION = 5
+PRESET_VERSION = 6
 
 # Big tech and well-known tech companies you asked to watch (added as "Your companies", label
 # "Watchlist"). Each entry: (name, kind, config, check interval in minutes). The Greenhouse /
@@ -104,6 +107,12 @@ PRESET_SOURCES = [
      "interval_minutes": 10},
     {"name": "LinkedIn: New Grad Engineer · United States", "kind": "linkedin", "since_version": 2,
      "config": {"keywords": "new grad engineer", "location": "United States", "experience": LINKEDIN_ENTRY_LEVELS},
+     "interval_minutes": 15},
+    {"name": "LinkedIn: Machine Learning Engineer · United States", "kind": "linkedin", "since_version": 6,
+     "config": {"keywords": "machine learning engineer", "location": "United States",
+                "experience": LINKEDIN_ENTRY_LEVELS}, "interval_minutes": 10},
+    {"name": "LinkedIn: Software Developer · United States", "kind": "linkedin", "since_version": 6,
+     "config": {"keywords": "software developer", "location": "United States", "experience": LINKEDIN_ENTRY_LEVELS},
      "interval_minutes": 15},
     # Only roles with Age "0d"; each one's Apply link is opened and its description checked.
     {"name": "Simplify: New Grad SWE + AI/ML", "kind": "simplify", "since_version": 4,

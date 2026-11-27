@@ -86,6 +86,7 @@ class Filters:
         self.seniority = _keyword_re(settings.get("seniority_exclude"))
         self.us_only = bool(settings.get("us_only"))
         self.max_age = timedelta(minutes=int(settings.get("max_age_minutes") or 60))
+        self.linkedin_max_age = timedelta(minutes=int(settings.get("linkedin_max_age_minutes") or 1440))
         self.now = datetime.now(timezone.utc)
 
     def _location_ok(self, job: Job) -> bool:
@@ -97,21 +98,23 @@ class Filters:
             return True
         return self.us_only and is_us_location(job.location)
 
-    def _freshness(self, job: Job, observed: bool) -> str | None:
+    def _freshness(self, job: Job, observed: bool, max_age: timedelta | None = None) -> str | None:
         """Only jobs posted minutes ago get through.
 
-        An exact publish time must be within max_age, wherever the job came from.
+        An exact publish time must be within max_age, wherever the job came from (LinkedIn has its
+        own, longer limit: it often lists jobs an hour or more after they were posted).
         Without one (Workday "Posted Today", Lever's draft date, plain career pages), a job is
         accepted only if it just appeared on a company board we check every few minutes
         (observed=True); from LinkedIn, feeds or a board seen for the first time it isn't."""
+        max_age = max_age or self.max_age
         posted = job.posted_at
         age = self.now - posted if is_precise(posted) else None
         if age is None:
             return None if observed else "No exact posting time, so it can't be confirmed as fresh"
-        if age > self.max_age:
+        if age > max_age:
             mins = int(age.total_seconds() // 60)
             when = f"{mins} min" if mins < 120 else f"{mins // 60} h" if mins < 2880 else f"{mins // 1440} days"
-            return f"Posted {when} ago (older than {int(self.max_age.total_seconds() // 60)} min)"
+            return f"Posted {when} ago (older than {int(max_age.total_seconds() // 60)} min)"
         return None
 
     def hires_engineers(self, job: Job) -> bool:
@@ -123,9 +126,10 @@ class Filters:
             return False
         return self._location_ok(job)
 
-    def reason(self, job: Job, baseline: bool = False, observed: bool = False) -> str | None:
+    def reason(self, job: Job, baseline: bool = False, observed: bool = False, linkedin: bool = False) -> str | None:
         """Why this job is filtered out, or None if it passes the title/location/freshness filters."""
-        return self.static_reason(job) or self._freshness(job, observed=observed and not baseline)
+        return self.static_reason(job) or self._freshness(
+            job, observed=observed and not baseline, max_age=self.linkedin_max_age if linkedin else None)
 
     def static_reason(self, job: Job) -> str | None:
         """All filters except freshness (role, level, company, location)."""

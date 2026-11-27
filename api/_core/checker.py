@@ -217,7 +217,8 @@ def process_results(conn, sources: list[dict], results: list[FetchResult], setti
         for j in res.jobs:
             if filters.static_reason(j) is not None:
                 continue
-            reasons[j.external_id] = filters.reason(j, baseline=baseline, observed=observed)
+            reasons[j.external_id] = filters.reason(j, baseline=baseline, observed=observed,
+                                                    linkedin=source["kind"] == "linkedin")
             rows.append({
                 "external_id": j.external_id,
                 "title": j.title[:500],
