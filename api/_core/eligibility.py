@@ -64,11 +64,75 @@ def sponsor_db() -> dict:
         return _db
 
 
+_alias_cache: dict[str, str | None] = {}
+_dba: dict[str, str] | None = None
+
+
+def _dba_names() -> dict[str, str]:
+    """'RIPPLING' -> 'PEOPLE CENTER INC D B A RIPPLING' (a few thousand employers list a DBA)."""
+    global _dba
+    if _dba is None:
+        employers, names = sponsor_db()["employers"], {}
+        for k in employers:
+            if " D B A " in k:
+                name = normalize_company(k.split(" D B A ", 1)[1])
+                if name not in names or _total(employers[k]) > _total(employers[names[name]]):
+                    names[name] = k  # the same DBA filed under several names: keep the biggest
+        _dba = names
+    return _dba
+
+
+def _total(rec) -> int:
+    return rec[0] + rec[1]
+
+
+# Words after the brand that don't change which employer it is ("CVS Health", "Meta Platforms").
+_GENERIC_REST = {"HEALTH", "HEALTHCARE", "PLATFORMS", "INDUSTRIES", "ENTERPRISES", "WORLDWIDE", "DIGITAL", "CORPORATE"}
+
+
+def _sponsor_key(key: str) -> str | None:
+    """The USCIS employer name for a company, when its legal name differs from the everyday one:
+      'JPMorganChase' -> 'JPMORGAN CHASE'  (spacing)
+      'Rippling'      -> 'PEOPLE CENTER INC D B A RIPPLING'  (doing business as)
+      'Meta'          -> 'META PLATFORMS'  (one-word brand, when one employer clearly dominates:
+                         'META PLATFORMS' 7,891 approvals vs 'META SOFT' 4; but not 'Archer':
+                         Archer Daniels Midland 181 vs Archer Aviation 38)
+    Exact names are a dictionary lookup; the rest scans the list only on a miss (cached), which
+    costs far less CPU than indexing 85,000 names on every cold start."""
+    employers = sponsor_db()["employers"]
+    if key in employers:
+        return key
+    if key in _alias_cache:
+        return _alias_cache[key]
+    squashed = key.replace(" ", "")
+    word, _, rest = key.partition(" ")
+    brand = len(word) >= 3 and (not rest or rest in _GENERIC_REST)
+    prefix = word + " "
+    found, cands = _dba_names().get(key), []
+    first = key[0]
+    for k in employers if found is None else ():
+        if k[0] != first:  # both checks need the same first letter
+            continue
+        if found is None and k.replace(" ", "") == squashed:
+            found = k
+        if brand and k.startswith(prefix):
+            cands.append(k)
+    if found is None and cands:
+        cands.sort(key=lambda k: -_total(employers[k]))
+        top, others = _total(employers[cands[0]]), sum(_total(employers[k]) for k in cands[1:])
+        if top >= 50 and top >= 5 * others:
+            found = cands[0]
+    if len(_alias_cache) < 5000:
+        _alias_cache[key] = found
+    return found
+
+
 def lookup_sponsor(company: str) -> dict | None:
     key = normalize_company(company)
     if len(key) < 2:
         return None
-    rec = sponsor_db()["employers"].get(key)
+    found = _sponsor_key(key)
+    rec = sponsor_db()["employers"].get(found) if found else None
     if not rec:
         return None
     initial, continuing, last_fy, legal = rec
