@@ -15,7 +15,9 @@ from .filters import MULTI_LOCATION_RE, Filters, is_us_location
 MAX_SOURCES_PER_RUN = 100  # a run checks at most this many sources (mostly cheap "not modified" replies)
 FETCH_WORKERS = 20
 MAX_DESCRIPTIONS_PER_RUN = 60  # full descriptions fetched per run; the rest wait for the next run
-MAX_READ_ATTEMPTS = 4          # tries to read a description before deciding without it
+MAX_READ_ATTEMPTS = 28         # tries to read a description (about 6 hours, see db.pending_jobs) before sending it unchecked
+LINKEDIN_READS_PER_RUN = 8     # LinkedIn refuses bursts of description requests; the rest wait a minute
+DEFERRED = "Waiting to read the posting"  # over this run's read budget: not counted as a failed try
 PENDING_PER_RUN = 30           # jobs whose description couldn't be read earlier, retried each run
 
 
@@ -113,17 +115,30 @@ def _drop_repeats(conn, work: list[tuple]) -> list[tuple]:
     return [item for item in work if item[0] in keep_ids]
 
 
-def _description(item, allow_fetch: bool) -> tuple[str, bool]:
-    """(plain text, read_failed)."""
+def _description(item, allow_fetch: bool) -> tuple[str, str]:
+    """(plain text, status): status is "ok", "failed" (rate limit, timeout) or "later" (over budget)."""
     source, job = item
     if job.description:
-        return eligibility.html_to_text(job.description), False
+        return eligibility.html_to_text(job.description), "ok"
     if not allow_fetch:
-        return "", True  # over this run's budget: try again next run
+        return "", "later"  # over this run's budget: try again next run
     try:
-        return fetchers.fetch_description(source["kind"], source["config"], job.external_id, job.url), False
+        return fetchers.fetch_description(source["kind"], source["config"], job.external_id, job.url), "ok"
     except Exception:  # noqa: BLE001 - rate limits, timeouts
-        return "", True
+        return "", "failed"
+
+
+def _read_budget(items: list[tuple[dict, fetchers.Job]]) -> list[bool]:
+    """Which descriptions to fetch this run: at most MAX_DESCRIPTIONS_PER_RUN, of which at most
+    LINKEDIN_READS_PER_RUN from LinkedIn."""
+    allow, total, linkedin = [], 0, 0
+    for source, job in items:
+        is_li = source["kind"] == "linkedin" and not job.description
+        ok = total < MAX_DESCRIPTIONS_PER_RUN and (not is_li or linkedin < LINKEDIN_READS_PER_RUN)
+        total += ok
+        linkedin += ok and is_li
+        allow.append(ok)
+    return allow
 
 
 def evaluate_jobs(items: list[tuple[dict, fetchers.Job]], settings: dict,
@@ -133,16 +148,20 @@ def evaluate_jobs(items: list[tuple[dict, fetchers.Job]], settings: dict,
 
     If a description can't be read (LinkedIn rate limits, timeouts) the job stays 'pending' and is
     retried on later runs, so a clearance requirement is never missed just because a request
-    failed. After MAX_READ_ATTEMPTS it's decided from the title and company alone.
+    failed. A job whose description still can't be read after MAX_READ_ATTEMPTS (about 6 hours) is
+    judged on its title and company and, if it passes, emailed in a separate "Couldn't check these"
+    section with a "Not checked" label: never mixed in with jobs whose posting was read.
 
     With ai_usage given (AI check enabled and within budget), jobs that pass the rules are also
     read by Claude Haiku, which can add restrictions the rules missed."""
     attempts = attempts or [MAX_READ_ATTEMPTS] * len(items)
     with ThreadPoolExecutor(max_workers=10) as pool:
-        reads = list(pool.map(lambda ix: _description(ix[1], ix[0] < MAX_DESCRIPTIONS_PER_RUN), enumerate(items)))
+        reads = list(pool.map(lambda args: _description(*args), zip(items, _read_budget(items))))
     verdicts = []
-    for (source, job), (text, failed), attempt in zip(items, reads, attempts):
-        if failed and attempt < MAX_READ_ATTEMPTS:
+    for (source, job), (text, status), attempt in zip(items, reads, attempts):
+        if status == "later":
+            verdicts.append(eligibility.Verdict(False, "pending", DEFERRED))
+        elif status == "failed" and attempt < MAX_READ_ATTEMPTS:
             verdicts.append(eligibility.Verdict(
                 False, "pending", f"Couldn't read the description yet (try {attempt} of {MAX_READ_ATTEMPTS}); retrying shortly"))
         elif (settings.get("us_only", True) and MULTI_LOCATION_RE.match(job.location or "")
@@ -152,6 +171,8 @@ def evaluate_jobs(items: list[tuple[dict, fetchers.Job]], settings: dict,
         else:
             verdicts.append(eligibility.evaluate(job.title, job.company or source["name"], text, settings,
                                                  loose=job.loose))
+            if status == "failed":  # gave up reading it: title and company only, clearly labeled
+                verdicts[-1].tags.append("unchecked")
         if (m := fetchers.LINKEDIN_APPLY.match(text)) and m[1] == "Easy Apply":
             verdicts[-1].tags.append("easy_apply")
 
@@ -309,8 +330,8 @@ def run_check(trigger: str = "cron", force: bool = False, source_ids: list[int] 
         if work:
             ai_usage = ai_usage_for_run(conn, settings)
             verdicts = evaluate_jobs([(s, j) for _, s, j, _ in work], settings, [n for *_, n in work], ai_usage)
-            db.set_eligibility(conn, [{"id": jid, "matched": v.ok, "visa": v.visa, "note": v.note, "checks": n,
-                                       "tags": ",".join(v.tags) or None}
+            db.set_eligibility(conn, [{"id": jid, "matched": v.ok, "visa": v.visa, "note": v.note,
+                                       "checks": n - 1 if v.note == DEFERRED else n, "tags": ",".join(v.tags) or None}
                                       for (jid, _, _, n), v in zip(work, verdicts)])
             if ai_usage and ai_usage.calls:
                 db.record_ai_usage(conn, ai_usage)

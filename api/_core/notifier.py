@@ -81,7 +81,12 @@ CHANNEL_LABELS = {
 
 
 # Labels that don't block a job (jobs.tags)
-TAG_LABELS = {"easy_apply": "Easy Apply", "recruiter": "Recruiter / job site"}
+TAG_LABELS = {"easy_apply": "Easy Apply", "recruiter": "Recruiter / job site", "unchecked": "Not checked"}
+UNCHECKED_HEADING = "⚠ Couldn't check these: LinkedIn wouldn't show the posting, so open each one to verify"
+
+
+def _unchecked(job: dict) -> bool:
+    return "unchecked" in (job.get("tags") or "").split(",")
 
 
 def tag_labels(tags: str | None) -> list[str]:
@@ -100,6 +105,7 @@ def _ago(dt: datetime | None) -> str:
 
 
 def send_jobs_email(to: str, jobs: list[dict], app_url: str = "", cc: list[str] | None = None) -> None:
+    jobs = sorted(jobs, key=_unchecked)  # checked jobs first; unchecked ones in their own section at the end
     n = len(jobs)
     first = jobs[0]
     hidden = sum(1 for j in jobs if (j.get("channel") or "").startswith("hidden"))
@@ -110,7 +116,11 @@ def send_jobs_email(to: str, jobs: list[dict], app_url: str = "", cc: list[str] 
                    f"{first['title']} @ {first['company']} + {n - 1} more")
 
     text_lines, rows = [], []
-    for j in jobs:
+    for i, j in enumerate(jobs):
+        if _unchecked(j) and (i == 0 or not _unchecked(jobs[i - 1])):
+            text_lines.append(UNCHECKED_HEADING)
+            rows.append(f"""<tr><td style="padding:12px 16px;background:#fffbeb;border-bottom:1px solid #e5e7eb;
+              font-size:13px;font-weight:600;color:#92400e">{escape(UNCHECKED_HEADING)}</td></tr>""")
         posted = _ago(j.get("posted_at"))
         meta = " · ".join(x for x in [j["company"], j.get("location") or "", f"posted {posted}" if posted else ""] if x)
         label, color = VISA_LABELS.get(j.get("visa") or "", ("", "#4b5563"))

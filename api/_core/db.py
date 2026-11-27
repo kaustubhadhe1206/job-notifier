@@ -551,13 +551,15 @@ def mark_for_check(conn, job_ids: list[int]) -> None:
 
 
 def pending_jobs(conn, limit: int) -> list[dict]:
-    """Candidates whose description couldn't be read yet; retried a few minutes apart."""
+    """Candidates whose description couldn't be read yet. Retries back off (40 s, 80 s, 160 s, ...
+    up to 15 min), so LinkedIn rate limits have time to pass: 28 tries span about 6 hours."""
     return conn.execute(
         """SELECT j.id, j.external_id, j.title, j.company, j.location, j.url, j.posted_at, j.checks,
                   s.id AS source_id, s.name AS source_name, s.kind, s.config
            FROM jobs j JOIN sources s ON s.id = j.source_id
            WHERE j.visa = 'pending' AND j.first_seen_at > now() - interval '1 day'
-             AND (j.checked_at IS NULL OR j.checked_at < now() - interval '40 seconds')
+             AND (j.checked_at IS NULL OR j.checked_at < now() - LEAST(
+                  interval '40 seconds' * power(2, GREATEST(j.checks - 1, 0)), interval '15 minutes'))
            ORDER BY j.first_seen_at LIMIT %s""",
         (limit,),
     ).fetchall()

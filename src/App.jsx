@@ -374,6 +374,7 @@ function ChannelBadge({ channel }) {
 const TAGS = {
   easy_apply: ["Easy Apply", "Applied on LinkedIn (Easy Apply), not on the company's own site"],
   recruiter: ["Recruiter / job site", "Posted by a staffing agency or job site, not the hiring company (AI check)"],
+  unchecked: ["⚠ Not checked", "LinkedIn wouldn't show this posting for hours, so it wasn't checked for citizenship, clearance or years of experience: open it to verify"],
 };
 
 function TagBadges({ tags }) {
